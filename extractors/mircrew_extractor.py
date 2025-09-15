@@ -4,7 +4,6 @@ MIRCrew Forum Extractor Implementation
 Concrete implementation of ForumExtractor for MIRCrew forum.
 """
 
-import os
 import re
 import requests
 import time
@@ -13,8 +12,11 @@ import logging
 import pickle
 from bs4 import BeautifulSoup, Tag
 from urllib.parse import urljoin, parse_qs, urlparse, unquote, quote_plus
-from forum_extractor import ForumExtractor
-from torrent_client import TorrentClient
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from extractors.forum_extractor import ForumExtractor
+from torrents.torrent_client import TorrentClient
 
 # Setup logging
 logger = logging.getLogger(__name__)

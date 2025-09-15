@@ -4,10 +4,12 @@ Torrent Client Factory
 Factory module for creating torrent client instances based on configuration.
 """
 
-import os
 from typing import Optional
-from torrent_client import TorrentClient
-from qbittorrent_client import QBittorrentClient
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from torrents.torrent_client import TorrentClient
+from torrents.qbittorrent_client import QBittorrentClient
 
 
 def create_torrent_client(client_type: Optional[str] = None) -> TorrentClient:

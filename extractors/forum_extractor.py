@@ -6,7 +6,10 @@ This module defines the abstract interface for forum extractor implementations.
 
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
-from torrent_client import TorrentClient
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from torrents.torrent_client import TorrentClient
 
 
 class ForumExtractor(ABC):

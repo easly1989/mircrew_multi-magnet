@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 """
-MIRCrew Multi-Magnet Script for Sonarr
-Manages the download of all episodes from a MIRCrew thread
+Multi-Forum Multi-Magnet Script for Sonarr
+Manages the download of all episodes from any forum thread using modular architecture
 
 ARCHITECTURE OVERVIEW
 ====================
@@ -213,6 +213,47 @@ To add support for a new forum site (e.g., AnotherForum, ExampleForum):
 5. Update the script documentation to include the new forum configuration options.
 
 This modular architecture allows you to easily extend the script to work with any forum site by implementing the ForumExtractor interface!
+
+TESTING
+=======
+The script includes dedicated test scripts for different forum implementations:
+
+For MIRCrew Testing:
+```bash
+python test_mircrew.py
+```
+
+This will:
+- Start the script in test mode
+- Prompt for episode selection
+- Use MIRCrew-specific test data
+- Simulate the full workflow without making actual changes
+
+For other forum implementations, create dedicated test scripts following the same pattern.
+
+USAGE EXAMPLES
+==============
+Normal Usage (with Sonarr):
+```bash
+python main.py
+```
+
+Test Usage (interactive):
+```bash
+python test_mircrew.py
+```
+
+Configuration (.env file):
+```
+FORUM_TYPE=mircrew
+TORRENT_CLIENT=qbittorrent
+MIRCREW_BASE_URL=https://mircrew-releases.org/
+MIRCREW_USERNAME=your_username
+MIRCREW_PASSWORD=your_password
+QBITTORRENT_URL=http://localhost:8080
+QBITTORRENT_USERNAME=your_username
+QBITTORRENT_PASSWORD=your_password
+```
 """
 
 import os
@@ -226,10 +267,8 @@ import time
 import logging
 import pickle
 from urllib.parse import urljoin, parse_qs, urlparse, unquote, quote_plus
-from torrent_client import TorrentClient
+from torrents.torrent_client import TorrentClient
 dotenv.load_dotenv()
-
-# No longer need constants here - they're handled by individual forum extractors
 
 # Setup logging
 logging.basicConfig(
@@ -240,13 +279,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-
-
-
 def main():
     """Main function of the script"""
-    logger.info("=== Starting MIRCrew Multi-Magnet Script ===")
+    logger.info("=== Starting Multi-Forum Multi-Magnet Script ===")
 
     # Read environment variables from Sonarr
     series_title = os.environ.get('sonarr_series_title', '')
@@ -265,60 +300,8 @@ def main():
         sys.exit(1)
 
     # Initialize forum extractor using factory
-    from forum_extractor_factory import create_forum_extractor
+    from extractors.forum_extractor_factory import create_forum_extractor
     extractor = create_forum_extractor()
-
-    main_with_extractor(extractor)
-
-
-def test_script():
-    """Function to test the script without Sonarr"""
-    logger.info("=== TEST MODE ===")
-    os.environ['TEST_MODE'] = 'true'
-    
-    # Simulate Sonarr variables for the test
-    test_episodes = input("Enter required episodes (e.g.: S01E01,S01E02) or ENTER for all: ").strip()
-    
-    # Set simulated environment variables
-    os.environ['sonarr_series_title'] = 'Only Murders in the Building'
-    os.environ['sonarr_episodefile_relativepath'] = test_episodes if test_episodes else ''
-    os.environ['sonarr_release_title'] = 'Only Murders in the Building - Stagione 5 (2025) [IN CORSO] [03/10] 1080p H264 ITA ENG EAC3 SUB ITA ENG - M&M.GP CreW'
-
-    # Parse test_episodes to set direct variables if provided
-    if test_episodes:
-        # Try to parse S05E02 format
-        match = re.search(r'S(\d+)E(\d+)', test_episodes)
-        if match:
-            os.environ['sonarr_episode_seasonnumber'] = match.group(1)
-            os.environ['sonarr_episode_episodenumbers'] = match.group(2)
-    # If no episodes specified, don't set the episode variables at all
-    # This will trigger the "process all episodes" logic
-    
-    # Initialize forum extractor for testing using factory
-    from forum_extractor_factory import create_forum_extractor
-    extractor = create_forum_extractor()
-
-    # Execute the script with test extractor
-    main_with_extractor(extractor)
-
-
-def main_with_extractor(extractor):
-    """Main function with a pre-initialized forum extractor"""
-    # Read environment variables from Sonarr
-    series_title = os.environ.get('sonarr_series_title', '')
-    episode_file_relative_path = os.environ.get('sonarr_episodefile_relativepath', '')
-    release_title = os.environ.get('sonarr_release_title', '')
-    season_number = os.environ.get('sonarr_episode_seasonnumber', '')
-    episode_numbers = os.environ.get('sonarr_episode_episodenumbers', '')
-
-    logger.info(f"Series: {series_title}")
-    logger.info(f"Episode path: {episode_file_relative_path}")
-    logger.info(f"Season: {season_number}, Episodes: {episode_numbers}")
-    logger.info(f"Release title: {release_title}")
-
-    if not release_title:
-        logger.error("Variable 'sonarr_release_title' not found, exiting.")
-        sys.exit(1)
 
     # Check if already logged in
     if extractor.verify_session():
@@ -448,8 +431,6 @@ def main_with_extractor(extractor):
     logger.info("=== Script completed ===")
 
 
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        test_script()
-    else:
-        main()
+    main()

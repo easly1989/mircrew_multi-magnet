@@ -8,7 +8,10 @@ import requests
 import re
 import logging
 from typing import Optional, List, Dict, Any
-from torrent_client import TorrentClient
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from torrents.torrent_client import TorrentClient
 
 logger = logging.getLogger(__name__)
 

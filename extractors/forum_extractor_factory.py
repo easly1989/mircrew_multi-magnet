@@ -4,11 +4,13 @@ Forum Extractor Factory
 Factory module for creating forum extractor instances based on configuration.
 """
 
-import os
 from typing import Optional
-from forum_extractor import ForumExtractor
-from mircrew_extractor import MIRCrewExtractor
-from torrent_client_factory import create_torrent_client
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from extractors.forum_extractor import ForumExtractor
+from extractors.mircrew_extractor import MIRCrewExtractor
+from torrents.torrent_client_factory import create_torrent_client
 
 
 def create_forum_extractor(forum_type: Optional[str] = None) -> ForumExtractor:
