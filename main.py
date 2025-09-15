@@ -260,13 +260,8 @@ import os
 import dotenv
 import sys
 import re
-import requests
-from bs4 import BeautifulSoup, Tag
-import json
 import time
 import logging
-import pickle
-from urllib.parse import urljoin, parse_qs, urlparse, unquote, quote_plus
 from torrents.torrent_client import TorrentClient
 dotenv.load_dotenv()
 

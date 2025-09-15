@@ -7,7 +7,6 @@ This module defines the abstract interface for torrent client implementations.
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
 
-
 class TorrentClient(ABC):
     """
     Abstract base class for torrent client implementations.
