@@ -3,6 +3,104 @@
 """
 MIRCrew Multi-Magnet Script for Sonarr
 Manages the download of all episodes from a MIRCrew thread
+
+ARCHITECTURE OVERVIEW
+====================
+
+This script has been refactored to support multiple torrent clients through a modular architecture:
+
+1. TorrentClient Interface (torrent_client.py)
+   - Defines the abstract interface that all torrent clients must implement
+   - Provides methods for login, adding magnets, getting torrents, removing torrents, and hash extraction
+
+2. Concrete Implementations
+   - QBittorrentClient (qbittorrent_client.py): Implementation for qBittorrent WebUI
+   - Future clients can be added by implementing the TorrentClient interface
+
+3. Factory Pattern (torrent_client_factory.py)
+   - Creates torrent client instances based on configuration
+   - Supports easy extension for new client types
+
+4. Main Script (mircrew.py)
+   - Uses the generic TorrentClient interface
+   - No longer coupled to specific torrent client implementations
+   - Can work with any torrent client that implements the interface
+
+ADDING A NEW TORRENT CLIENT
+===========================
+
+To add support for a new torrent client (e.g., Transmission, Deluge):
+
+1. Create a new implementation file (e.g., `transmission_client.py`):
+   ```python
+   from torrent_client import TorrentClient
+
+   class TransmissionClient(TorrentClient):
+       def __init__(self, url: str, username: str, password: str):
+           # Initialize client
+           pass
+
+       def login(self) -> bool:
+           # Implement login logic
+           pass
+
+       def add_magnet(self, magnet_url: str, category: str = None) -> bool:
+           # Implement magnet addition
+           pass
+
+       def get_torrents(self) -> List[Dict[str, Any]]:
+           # Return list of torrents
+           pass
+
+       def remove_torrent(self, torrent_hash: str) -> bool:
+           # Implement torrent removal
+           pass
+
+       def get_torrent_hash_from_magnet(self, magnet_url: str) -> Optional[str]:
+           # Extract hash from magnet
+           pass
+   ```
+
+2. Update the factory (`torrent_client_factory.py`):
+   ```python
+   def create_torrent_client(client_type: Optional[str] = None) -> TorrentClient:
+       if client_type == 'transmission':
+           return _create_transmission_client()
+       # ... existing code
+   ```
+
+3. Add a new factory function:
+   ```python
+   def _create_transmission_client() -> TransmissionClient:
+       url = os.environ.get('TRANSMISSION_URL')
+       username = os.environ.get('TRANSMISSION_USERNAME')
+       password = os.environ.get('TRANSMISSION_PASSWORD')
+       # ... validation and instantiation
+   ```
+
+4. Update environment variables in `.env`:
+   ```
+   TORRENT_CLIENT=transmission
+   TRANSMISSION_URL=http://localhost:9091
+   TRANSMISSION_USERNAME=your_username
+   TRANSMISSION_PASSWORD=your_password
+   ```
+
+CONFIGURATION
+=============
+
+Required environment variables:
+- MIRCREW_BASE_URL: Base URL for MIRCrew site
+- MIRCREW_USERNAME: MIRCrew username
+- MIRCREW_PASSWORD: MIRCrew password
+- TORRENT_CLIENT: Type of torrent client (default: qbittorrent)
+
+For qBittorrent (default):
+- QBITTORRENT_URL: qBittorrent WebUI URL
+- QBITTORRENT_USERNAME: qBittorrent username
+- QBITTORRENT_PASSWORD: qBittorrent password
+
+For other clients, add their specific environment variables as needed.
 """
 
 import os
@@ -16,26 +114,21 @@ import time
 import logging
 import pickle
 from urllib.parse import urljoin, parse_qs, urlparse, unquote, quote_plus
+from torrent_client import TorrentClient
 dotenv.load_dotenv()
 
 # Configuration
 MIRCREW_BASE_URL = str(os.environ.get('MIRCREW_BASE_URL', 'https://mircrew-releases.org/'))
 MIRCREW_USERNAME = str(os.environ.get('MIRCREW_USERNAME'))
 MIRCREW_PASSWORD = str(os.environ.get('MIRCREW_PASSWORD'))
-QBITTORRENT_URL = str(os.environ.get('QBITTORRENT_URL'))
-QBITTORRENT_USERNAME = str(os.environ.get('QBITTORRENT_USERNAME'))
-QBITTORRENT_PASSWORD = str(os.environ.get('QBITTORRENT_PASSWORD'))
 
-# Validate required environment variables
-if not MIRCREW_USERNAME or not MIRCREW_PASSWORD or not QBITTORRENT_URL or not QBITTORRENT_USERNAME or not QBITTORRENT_PASSWORD:
-    raise ValueError("Missing required environment variables. Please check .env file.")
+# Validate required MIRCrew environment variables
+if not MIRCREW_USERNAME or not MIRCREW_PASSWORD:
+    raise ValueError("Missing required MIRCrew environment variables. Please check .env file.")
 
 # Type assertions for mypy/pylance
 assert MIRCREW_USERNAME is not None
 assert MIRCREW_PASSWORD is not None
-assert QBITTORRENT_URL is not None
-assert QBITTORRENT_USERNAME is not None
-assert QBITTORRENT_PASSWORD is not None
 
 # Cookie persistence
 COOKIE_FILE = "mircrew_cookies.pkl"
@@ -65,12 +158,12 @@ def extract_magnet_title_from_url(magnet_url):
 
 
 class MIRCrewExtractor:
-    def __init__(self):
+    def __init__(self, torrent_client: TorrentClient):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-        self.qb_cookie = None
+        self.torrent_client = torrent_client
         self.load_cookies()
 
     def load_cookies(self):
@@ -251,26 +344,6 @@ class MIRCrewExtractor:
 
         return False
 
-    def login_qbittorrent(self):
-        """Login to qBittorrent WebUI"""
-        try:
-            login_url = f"{QBITTORRENT_URL}/api/v2/auth/login"
-            data = {
-                'username': QBITTORRENT_USERNAME,
-                'password': QBITTORRENT_PASSWORD
-            }
-            resp = requests.post(login_url, data=data)
-            if resp.text == "Ok.":
-                self.qb_cookie = resp.cookies
-                logger.info("qBittorrent login successful")
-                return True
-            else:
-                logger.error("qBittorrent login failed")
-                return False
-        except Exception as e:
-            logger.error(f"Error logging into qBittorrent: {e}")
-            return False
-        
     def is_already_logged_in(self):
         """Check if user is already logged in by visiting the index page"""
         try:
@@ -456,59 +529,6 @@ class MIRCrewExtractor:
             logger.error(f"Error extracting magnets: {e}")
             return []
 
-    def get_qb_torrents(self):
-        """Gets torrent list from qBittorrent"""
-        try:
-            url = f"{QBITTORRENT_URL}/api/v2/torrents/info"
-            resp = requests.get(url, cookies=self.qb_cookie)
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Error retrieving qBittorrent torrents: {e}")
-            return []
-
-    def remove_torrent(self, torrent_hash):
-        """Removes torrent from qBittorrent"""
-        try:
-            url = f"{QBITTORRENT_URL}/api/v2/torrents/delete"
-            data = {
-                'hashes': torrent_hash,
-                'deleteFiles': 'false'
-            }
-            resp = requests.post(url, data=data, cookies=self.qb_cookie)
-            return resp.status_code == 200
-        except Exception as e:
-            logger.error(f"Error removing torrent: {e}")
-            return False
-
-    def add_magnet(self, magnet_url, category=None):
-        """Adds magnet to qBittorrent"""
-        try:
-            url = f"{QBITTORRENT_URL}/api/v2/torrents/add"
-            data = {
-                'urls': magnet_url,
-            }
-            if category:
-                data['category'] = category
-            resp = requests.post(url, data=data, cookies=self.qb_cookie)
-            return resp.status_code == 200
-        except Exception as e:
-            logger.error(f"Error adding magnet: {e}")
-            return False
-
-    def get_torrent_hash_from_magnet(self, magnet_url):
-        """Extracts torrent hash from magnet link"""
-        try:
-            match = re.search(r'urn:btih:([a-fA-F0-9]{40})', magnet_url)
-            if match:
-                return match.group(1).lower()
-            match = re.search(r'urn:btih:([a-fA-F0-9]{32})', magnet_url)
-            if match:
-                return match.group(1).lower()
-            return None
-        except Exception as e:
-            logger.error(f"Error extracting hash: {e}")
-            return None
-
     def find_original_torrent(self, original_torrents, target_magnet_hash):
         """Finds the original torrent downloaded by Sonarr"""
         for torrent in original_torrents:
@@ -560,7 +580,32 @@ def main():
         logger.error("Variable 'sonarr_release_title' not found, exiting.")
         sys.exit(1)
 
-    extractor = MIRCrewExtractor()
+    # Initialize torrent client using factory
+    from torrent_client_factory import create_torrent_client
+    torrent_client = create_torrent_client()
+
+    main_with_client(torrent_client)
+
+
+def main_with_client(torrent_client):
+    """Main function with a pre-initialized torrent client"""
+    # Read environment variables from Sonarr
+    series_title = os.environ.get('sonarr_series_title', '')
+    episode_file_relative_path = os.environ.get('sonarr_episodefile_relativepath', '')
+    release_title = os.environ.get('sonarr_release_title', '')
+    season_number = os.environ.get('sonarr_episode_seasonnumber', '')
+    episode_numbers = os.environ.get('sonarr_episode_episodenumbers', '')
+
+    logger.info(f"Series: {series_title}")
+    logger.info(f"Episode path: {episode_file_relative_path}")
+    logger.info(f"Season: {season_number}, Episodes: {episode_numbers}")
+    logger.info(f"Release title: {release_title}")
+
+    if not release_title:
+        logger.error("Variable 'sonarr_release_title' not found, exiting.")
+        sys.exit(1)
+
+    extractor = MIRCrewExtractor(torrent_client)
 
     # Check if already logged in
     if extractor.verify_session():
@@ -573,8 +618,8 @@ def main():
             logger.error("Unable to access MIRCrew")
             return
 
-    if not extractor.login_qbittorrent():
-        logger.error("Unable to access qBittorrent")
+    if not extractor.torrent_client.login():
+        logger.error("Unable to access torrent client")
         return
         
     thread_url = extractor.search_thread_by_release_title(release_title)
@@ -582,7 +627,7 @@ def main():
         logger.error("I didn't find a MIRCrew thread for this release. Exiting.")
         sys.exit(0)
         
-    original_torrents = extractor.get_qb_torrents()
+    original_torrents = extractor.torrent_client.get_torrents()
     magnets = extractor.extract_magnets_from_thread(thread_url)
     if not magnets:
         logger.warning("No magnets found in the thread")
@@ -631,7 +676,7 @@ def main():
     first_magnet_hash = None
 
     if magnets:
-        first_magnet_hash = extractor.get_torrent_hash_from_magnet(magnets[0]['magnet'])
+        first_magnet_hash = extractor.torrent_client.get_torrent_hash_from_magnet(magnets[0]['magnet'])
         logger.info(f"First magnet hash: {first_magnet_hash}")
 
     added_count = 0
@@ -649,10 +694,10 @@ def main():
         if i == 0 and first_magnet_hash and not original_torrent_removed:
             if filter_by_codes and not episode_codes_found.intersection(needed_episodes):
                 if not is_test_mode:
-                    current_torrents = extractor.get_qb_torrents()
+                    current_torrents = extractor.torrent_client.get_torrents()
                     original_torrent = extractor.find_original_torrent(current_torrents, first_magnet_hash)
                     if original_torrent:
-                        if extractor.remove_torrent(original_torrent['hash']):
+                        if extractor.torrent_client.remove_torrent(original_torrent['hash']):
                             logger.info(f"Removed original torrent: {magnet_title}")
                             original_torrent_removed = True
                         else:
@@ -679,7 +724,7 @@ def main():
             logger.info(f"[TEST] I would add magnet for {magnet_title}")
             added_count += 1
         else:
-            if extractor.add_magnet(magnet_url, category='sonarr'):
+            if extractor.torrent_client.add_magnet(magnet_url, category='sonarr'):
                 added_count += 1
                 logger.info(f"Added magnet for {magnet_title}")
                 time.sleep(1)
@@ -713,8 +758,12 @@ def test_script():
     # If no episodes specified, don't set the episode variables at all
     # This will trigger the "process all episodes" logic
     
-    # Execute the script
-    main()
+    # Initialize torrent client for testing using factory
+    from torrent_client_factory import create_torrent_client
+    torrent_client = create_torrent_client()
+
+    # Execute the script with test torrent client
+    main_with_client(torrent_client)
 
 
 if __name__ == "__main__":
