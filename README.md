@@ -198,6 +198,8 @@ For users who cannot modify their Docker Compose files (e.g., when using managed
   sudo apt install python3 python3-pip
   ```
 - The script changes to the script's directory and runs `python3 main.py`, so ensure `main.py` is in the same directory as `run_main.sh`.
+- The Sonarr user must have read and write access to the script directory and all its files and subdirectories.
+- When configuring the Custom Script in Sonarr, ensure the path points to `run_main.sh` instead of `main.py`.
 
 This setup allows you to use the script without modifying Docker configurations.
 
