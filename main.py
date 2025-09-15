@@ -12,7 +12,6 @@ import sys
 import re
 import time
 import logging
-from torrents.torrent_client import TorrentClient
 dotenv.load_dotenv()
 
 # Setup logging
