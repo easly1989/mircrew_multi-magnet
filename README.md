@@ -163,6 +163,43 @@ python tests/test_mircrew.py
 # Or run the main script directly
 python main.py
 ```
+## Alternative: Using Shell Script for Non-Modifiable Docker Setups
+
+For users who cannot modify their Docker Compose files (e.g., when using managed setups like Saltbox), you can use the provided `run_main.sh` shell script that automatically handles Python dependencies and runs the main script.
+
+### Prerequisites
+
+- Python 3.7+ installed on the host system
+- Access to bash/shell
+- The script directory accessible by Sonarr
+
+### Setup Steps
+
+1. **Place the Script**: Copy `run_main.sh` to a directory accessible by Sonarr, e.g., `/opt/scripts/`. Ensure the entire project directory is available there.
+
+2. **Make Executable**: `chmod +x /opt/scripts/run_main.sh`
+
+3. **Configure Environment**: Create/update `.env` file in the same directory as the script with your credentials (see Environment Variables section above).
+
+4. **Configure Sonarr**: In Sonarr settings, add a Custom Script pointing to `/opt/scripts/run_main.sh` instead of `main.py`. Use the same settings as described in the Docker section.
+
+5. **Test**: Run the script manually to ensure it works:
+
+   ```bash
+   /opt/scripts/run_main.sh
+   ```
+
+**Important Notes**:
+
+- The script will automatically install required Python packages (requests, beautifulsoup4) if they're not present using `pip3`.
+- The script assumes an Alpine-based system for installing pip3 if missing. If using a different Linux distribution (e.g., Ubuntu/Debian in Saltbox), ensure `python3` and `pip3` are installed manually:
+  ```bash
+  sudo apt update
+  sudo apt install python3 python3-pip
+  ```
+- The script changes to the script's directory and runs `python3 main.py`, so ensure `main.py` is in the same directory as `run_main.sh`.
+
+This setup allows you to use the script without modifying Docker configurations.
 
 ## Configuration Details
 
