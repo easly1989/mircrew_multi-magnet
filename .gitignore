@@ -1,0 +1,9 @@
+# Cookie files for session persistence
+mircrew_cookies.pkl
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+# Environment variables
+.env
