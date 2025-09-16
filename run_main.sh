@@ -1,7 +1,7 @@
 #!/bin/sh
 
-# Enable error handling - exit on any error
-set -e
+# Redirect all output to stderr for better Sonarr logging
+exec >&2
 
 # Script started
 echo "=== Multi-Forum Multi-Magnet Script Started ==="
