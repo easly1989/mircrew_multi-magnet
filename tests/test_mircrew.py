@@ -252,28 +252,28 @@ def test_fallback_mechanism(mock_torrent_client, mocker):
         if "thread" in url:
             raise requests.exceptions.RequestException("Primary failed")
         mock_resp = mocker.MagicMock()
-        mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:errorfallback123456789012345678901234567890&dn=Error.Fallback">Error Fallback</a></body></html>'
+        mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:abcdef123456789012345678901234567890abcdef&dn=Error.Fallback">Error Fallback</a></body></html>'
         mock_resp.raise_for_status.return_value = None
         return mock_resp
 
     mock_get.side_effect = error_side_effect
     magnets = extractor.extract_magnets_from_thread("http://example.com/thread", "http://example.com/post")
     assert len(magnets) == 1
-    assert "errorfallback" in magnets[0]['magnet']
+    assert "abcdef123456789012345678901234567890abcdef" in magnets[0]['magnet']
 
     # Test case 5: Timeout scenario
     def timeout_side_effect(url, timeout=None):
         if "thread" in url:
             raise requests.exceptions.Timeout("Timeout on primary")
         mock_resp = mocker.MagicMock()
-        mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:timeoutfallback12345678901234567890123456&dn=Timeout.Fallback">Timeout Fallback</a></body></html>'
+        mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:abcdef123456789012345678901234567890abcdef&dn=Timeout.Fallback">Timeout Fallback</a></body></html>'
         mock_resp.raise_for_status.return_value = None
         return mock_resp
 
     mock_get.side_effect = timeout_side_effect
     magnets = extractor.extract_magnets_from_thread("http://example.com/thread", "http://example.com/post")
     assert len(magnets) == 1
-    assert "timeoutfallback" in magnets[0]['magnet']
+    assert "abcdef123456789012345678901234567890abcdef" in magnets[0]['magnet']
 
 
 def test_metadata_handling(mock_torrent_client, mocker):
@@ -291,14 +291,14 @@ def test_metadata_handling(mock_torrent_client, mocker):
             mock_resp.text = '<html><body><p>No magnets in thread</p></body></html>'
         else:
             # Fallback succeeds
-            mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:metadata1234567890123456789012345678901234&dn=Metadata.Test">Metadata Magnet</a></body></html>'
+            mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:abcdef123456789012345678901234567890abcd&dn=Metadata.Test">Metadata Magnet</a></body></html>'
         mock_resp.raise_for_status.return_value = None
         return mock_resp
 
     mock_get.side_effect = success_side_effect
     magnets = extractor.extract_magnets_from_thread("http://example.com/thread", "http://example.com/post")
     assert len(magnets) == 1
-    assert magnets[0]['magnet'] == "magnet:?xt=urn:btih:metadata1234567890123456789012345678901234&dn=Metadata.Test"
+    assert magnets[0]['magnet'] == "magnet:?xt=urn:btih:abcdef123456789012345678901234567890abcd&dn=Metadata.Test"
 
     # Test case 2: forum_post_url is None, no fallback attempted
     mock_get.side_effect = lambda url, timeout=None: mocker.MagicMock(
@@ -308,8 +308,8 @@ def test_metadata_handling(mock_torrent_client, mocker):
     magnets = extractor.extract_magnets_from_thread("http://example.com/thread", None)
     assert magnets == []
 
-    # Verify that when forum_post_url is None, only primary URL is called
-    assert mock_get.call_count == 1
+    # Verify that when forum_post_url is None, only primary URL is called (with retries)
+    assert mock_get.call_count == 4  # Primary extraction with retries + legacy extraction
 
     # Test case 3: forum_post_url provided but fallback also fails
     def fail_side_effect(url, timeout=None):
@@ -413,17 +413,24 @@ def test_backward_compatibility_feature_detection(mock_torrent_client, mocker):
     # Mock _extract_magnets_from_page to return empty list (primary extraction fails)
     mock_extract = mocker.patch.object(extractor, '_extract_magnets_from_page', return_value=[])
 
+    # Mock session.get to avoid actual HTTP calls
+    mock_get = mocker.patch.object(extractor.session, 'get')
+    mock_resp = mocker.MagicMock()
+    mock_resp.text = '<html><body><p>No magnets</p></body></html>'
+    mock_resp.raise_for_status.return_value = None
+    mock_get.return_value = mock_resp
+
     # Test case 1: New metadata available (forum_post_url present)
-    with mocker.patch('logging.info') as mock_info:
-        extractor.extract_magnets_from_thread("http://example.com/thread", "http://example.com/post")
-        # Should log that new metadata is available
-        mock_info.assert_any_call("Extracting magnets from: http://example.com/thread")
+    mock_info = mocker.patch('extractors.mircrew_extractor.logger.info')
+    extractor.extract_magnets_from_thread("http://example.com/thread", "http://example.com/post")
+    # Should log that new metadata is available
+    mock_info.assert_any_call("Extracting magnets from: http://example.com/thread")
 
     # Test case 2: Legacy mode (forum_post_url missing)
-    with mocker.patch('logging.info') as mock_info:
-        extractor.extract_magnets_from_thread("http://example.com/thread", None)
-        # Should log legacy mode
-        mock_info.assert_any_call("Legacy mode: forum_post_url not available, using backward compatible extraction")
+    mock_info = mocker.patch('extractors.mircrew_extractor.logger.info')
+    extractor.extract_magnets_from_thread("http://example.com/thread", None)
+    # Should log legacy mode
+    mock_info.assert_any_call("Legacy mode: forum_post_url not available, using backward compatible extraction")
 
 
 def test_legacy_extraction_path(mock_torrent_client, mocker):
@@ -439,18 +446,18 @@ def test_legacy_extraction_path(mock_torrent_client, mocker):
 
     # Mock _extract_magnets_legacy_mode to succeed
     legacy_magnets = [{'magnet': 'magnet:?xt=urn:btih:legacy123', 'episode_info': 'S01E01', 'magnet_title': 'Legacy Test'}]
-    with mocker.patch.object(extractor, '_extract_magnets_legacy_mode', return_value=legacy_magnets) as mock_legacy:
-        with mocker.patch('logging.info') as mock_info:
-            result = extractor.extract_magnets_from_thread("http://example.com/thread", None)
+    mock_legacy = mocker.patch.object(extractor, '_extract_magnets_legacy_mode', return_value=legacy_magnets)
+    mock_info = mocker.patch('extractors.mircrew_extractor.logger.info')
+    result = extractor.extract_magnets_from_thread("http://example.com/thread", None)
 
-            # Should call legacy extraction
-            mock_legacy.assert_called_once_with("http://example.com/thread")
+    # Should call legacy extraction
+    mock_legacy.assert_called_once_with("http://example.com/thread")
 
-            # Should return legacy results
-            assert result == legacy_magnets
+    # Should return legacy results
+    assert result == legacy_magnets
 
-            # Should log legacy path usage
-            mock_info.assert_any_call("Using legacy extraction path without forum_post_url")
+    # Should log legacy path usage
+    mock_info.assert_any_call("Using legacy extraction path without forum_post_url")
 
 
 def test_enhanced_fallback_vs_legacy_mode(mock_torrent_client, mocker):
@@ -463,29 +470,26 @@ def test_enhanced_fallback_vs_legacy_mode(mock_torrent_client, mocker):
         if "thread" in url:
             mock_resp.text = '<html><body><p>No magnets in thread</p></body></html>'
         else:  # post URL
-            mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:fallback123&dn=Fallback.Test">Fallback Magnet</a></body></html>'
+            mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:abcdef123456789012345678901234567890abcdef&dn=Fallback.Test">Fallback Magnet</a></body></html>'
         mock_resp.raise_for_status.return_value = None
         return mock_resp
 
     mock_get = mocker.patch.object(extractor.session, 'get', side_effect=mock_get_side_effect)
 
     # Test case 1: Enhanced fallback with forum_post_url
-    with mocker.patch.object(extractor, '_extract_magnets_from_page') as mock_extract:
-        mock_extract.return_value = []  # Primary fails
-
-        result = extractor.extract_magnets_from_thread("http://example.com/thread", "http://example.com/post")
-        assert len(result) == 1
-        assert "fallback123" in result[0]['magnet']
+    # Don't mock _extract_magnets_from_page so it uses the real session.get side_effect
+    result = extractor.extract_magnets_from_thread("http://example.com/thread", "http://example.com/post")
+    assert len(result) == 1
+    assert "abcdef123456789012345678901234567890abcdef" in result[0]['magnet']
 
     # Test case 2: Legacy mode without forum_post_url
     legacy_magnets = [{'magnet': 'magnet:?xt=urn:btih:legacy456', 'episode_info': 'S01E02', 'magnet_title': 'Legacy Magnet'}]
-    with mocker.patch.object(extractor, '_extract_magnets_from_page') as mock_extract:
-        with mocker.patch.object(extractor, '_extract_magnets_legacy_mode', return_value=legacy_magnets) as mock_legacy:
-            mock_extract.return_value = []  # Primary fails
+    mock_extract = mocker.patch.object(extractor, '_extract_magnets_from_page', return_value=[])
+    mock_legacy = mocker.patch.object(extractor, '_extract_magnets_legacy_mode', return_value=legacy_magnets)
 
-            result = extractor.extract_magnets_from_thread("http://example.com/thread", None)
-            assert result == legacy_magnets
-            mock_legacy.assert_called_once_with("http://example.com/thread")
+    result = extractor.extract_magnets_from_thread("http://example.com/thread", None)
+    assert result == legacy_magnets
+    mock_legacy.assert_called_once_with("http://example.com/thread")
 
 
 def test_legacy_extraction_magnet_discovery(mock_torrent_client, mocker):
@@ -568,7 +572,7 @@ def test_backward_compatibility_error_handling(mock_torrent_client, mocker):
             raise requests.exceptions.RequestException("Primary failed")
         # Fallback succeeds
         mock_resp = mocker.MagicMock()
-        mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:fallback789&dn=Fallback.Magnet">Fallback</a></body></html>'
+        mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:abcdef123456789012345678901234567890abcdef&dn=Fallback.Magnet">Fallback</a></body></html>'
         mock_resp.raise_for_status.return_value = None
         return mock_resp
 
@@ -578,7 +582,7 @@ def test_backward_compatibility_error_handling(mock_torrent_client, mocker):
     # The _extract_magnets_from_page method has retry logic, so it will catch the exception
     # and the fallback should work
     assert len(result) == 1
-    assert "fallback789" in result[0]['magnet']
+    assert "abcdef123456789012345678901234567890abcdef" in result[0]['magnet']
 
     # Test case 2: Both primary and fallback fail
     mock_get.side_effect = requests.exceptions.RequestException("Both failed")
