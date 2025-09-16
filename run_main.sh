@@ -35,9 +35,12 @@ check_python_module() {
 }
 
 # Install packages to local directory if not present
-check_python_module requests || pip3 install --target="$LOCAL_LIB" --no-cache-dir requests
-check_python_module bs4 || pip3 install --target="$LOCAL_LIB" --no-cache-dir beautifulsoup4
-check_python_module dotenv || pip3 install --target="$LOCAL_LIB" --no-cache-dir python-dotenv
+echo "Checking and installing requests..."
+check_python_module requests || (echo "Installing requests..." && pip3 install --target="$LOCAL_LIB" --upgrade --no-cache-dir requests)
+echo "Checking and installing beautifulsoup4..."
+check_python_module bs4 || (echo "Installing beautifulsoup4..." && pip3 install --target="$LOCAL_LIB" --upgrade --no-cache-dir beautifulsoup4)
+echo "Checking and installing python-dotenv..."
+check_python_module dotenv || (echo "Installing python-dotenv..." && pip3 install --target="$LOCAL_LIB" --upgrade --no-cache-dir python-dotenv)
 
 # Now run the Python script, after ensuring you are in the correct directory
 cd "$SCRIPT_DIR"
@@ -46,8 +49,12 @@ cd "$SCRIPT_DIR"
 echo "Sonarr Event Type: $sonarr_eventtype"
 
 if [ "$sonarr_eventtype" = "Test" ]; then
-    check_python_module pytest || pip3 install --target="$LOCAL_LIB" --no-cache-dir pytest
-    python3 tests/test_mircrew.py
+    echo "Test mode detected. Checking pytest..."
+    check_python_module pytest || (echo "Installing pytest..." && pip3 install --target="$LOCAL_LIB" --upgrade --no-cache-dir pytest)
+    echo "Running tests with pytest..."
+    python3 -m pytest tests/test_mircrew.py -v
+    echo "Test execution completed."
 else
+    echo "Running main script..."
     python3 main.py
 fi
