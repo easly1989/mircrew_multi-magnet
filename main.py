@@ -27,6 +27,13 @@ def main():
     """Main function of the script"""
     logger.info("=== Starting Multi-Forum Multi-Magnet Script ===")
 
+    # Debug: Print all Sonarr-related environment variables
+    logger.info("=== Sonarr Environment Variables ===")
+    for key, value in os.environ.items():
+        if 'SONARR' in key.upper() or 'sonarr' in key.lower():
+            logger.info(f"Env var: {key} = '{value}'")
+    logger.info("=== End Environment Variables ===")
+
     # Read environment variables from Sonarr
     series_title = os.environ.get('SONARR_SERIES_TITLE', '')
     episode_file_relative_path = os.environ.get('SONARR_EPISODEFILE_RELATIVEPATH', '')
@@ -40,7 +47,7 @@ def main():
     logger.info(f"Release title: {release_title}")
 
     if not release_title:
-        logger.error("Variable 'sonarr_release_title' not found, exiting.")
+        logger.error("Variable 'SONARR_RELEASE_TITLE' not found, exiting.")
         sys.exit(1)
 
     # Initialize forum extractor using factory
