@@ -40,7 +40,11 @@ def test_mircrew():
     os.environ['FORUM_TYPE'] = 'mircrew'
 
     # Simulate Sonarr variables for the test
-    test_episodes = input("Enter required episodes (e.g.: S01E01,S01E02) or ENTER for all: ").strip()
+    event_type = os.environ.get('EventType', '')
+    if event_type == 'Test':
+        test_episodes = ''
+    else:
+        test_episodes = input("Enter required episodes (e.g.: S01E01,S01E02) or ENTER for all: ").strip()
 
     # Set simulated environment variables for MIRCrew
     os.environ['sonarr_series_title'] = 'Only Murders in the Building'
