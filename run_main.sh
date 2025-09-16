@@ -46,6 +46,7 @@ cd "$SCRIPT_DIR"
 echo "Sonarr Event Type: $sonarr_eventtype"
 
 if [ "$sonarr_eventtype" = "Test" ]; then
+    check_python_module pytest || pip3 install --target="$LOCAL_LIB" --no-cache-dir pytest
     python3 tests/test_mircrew.py
 else
     python3 main.py
