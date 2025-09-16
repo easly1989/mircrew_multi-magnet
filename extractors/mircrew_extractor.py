@@ -303,29 +303,51 @@ class MIRCrewExtractor(ForumExtractor):
             logger.info("Re-login successful, continuing search...")
 
         base_search_url = urljoin(MIRCREW_BASE_URL, "search.php")
-        encoded_query = quote_plus(f"\"{release_title}\"")
 
+        # First attempt: exact match with full title
+        logger.info(f"Searching for exact match: {release_title}")
+        encoded_query = quote_plus(f"\"{release_title}\"")
+        thread_url = self._perform_search(encoded_query)
+
+        if thread_url:
+            logger.info("Found thread with exact match")
+            return thread_url
+
+        # Second attempt: season-level fallback
+        logger.info("Exact match failed, trying season-level search...")
+        season_query = self._extract_season_search_query(release_title)
+        if season_query:
+            logger.info(f"Searching for season-level: {season_query}")
+            encoded_query = quote_plus(f"\"{season_query}\"")
+            thread_url = self._perform_search(encoded_query)
+            if thread_url:
+                logger.info("Found thread with season-level search")
+                return thread_url
+
+        logger.warning("No thread found with any search strategy")
+        return None
+
+    def _perform_search(self, encoded_query):
+        """Perform the actual search with given query"""
         params = {
-            "keywords": f"{encoded_query}",  # search for the exact phrase in quotes
+            "keywords": f"{encoded_query}",
             "terms": "all",
             "author": "",
-            "fid[]": ["28", "51", "52", "30"],  # the subforums to include in the search
+            "fid[]": ["28", "51", "52", "30"],
             "sc": "1",
-            "sf": "titleonly",  # search only in titles
-            "sr": "topics",     # search among topics
-            "sk": "t",          # order by title (subject)
-            "sd": "d",          # descending order
+            "sf": "titleonly",
+            "sr": "topics",
+            "sk": "t",
+            "sd": "d",
             "st": "0",
             "ch": "300",
             "t": "0",
             "submit": "Cerca"
         }
 
-
         try:
             request_text = f"https://mircrew-releases.org/search.php?keywords={encoded_query}&terms=all&author=&fid%5B%5D=28&fid%5B%5D=51&fid%5B%5D=52&fid%5B%5D=30&sc=1&sf=titleonly&sr=topics&sk=t&sd=d&st=0&ch=300&t=0&submit=Cerca"
 
-            #response = self.session.get(base_search_url, params=params)
             response = self.session.get(request_text)
             response.raise_for_status()
         except Exception as e:
@@ -334,7 +356,6 @@ class MIRCrewExtractor(ForumExtractor):
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Find the search results container specifically
         search_results_container = soup.find('ul', {'class': 'topiclist topics'})
         if not search_results_container or not isinstance(search_results_container, Tag):
             logger.warning("Search results container not found (ul.topiclist.topics)")
@@ -342,7 +363,6 @@ class MIRCrewExtractor(ForumExtractor):
 
         logger.info("Search results container found, searching for thread...")
 
-        # Search for viewtopic links only within the search results container
         for a in search_results_container.find_all('a', href=True):
             if not isinstance(a, Tag):
                 continue
@@ -354,12 +374,10 @@ class MIRCrewExtractor(ForumExtractor):
             logger.info(f"Found link in container: {href_str}")
 
             if "viewtopic.php" in href_str:
-                # URL construction with proper handling of relative URLs
                 if href_str.startswith('http'):
                     thread_url = href_str
                     logger.info("URL already complete (absolute)")
                 else:
-                    # urljoin handles "./" prefix correctly - no need to remove it
                     thread_url = urljoin(MIRCREW_BASE_URL, href_str)
                     logger.info(f"URL built from relative: '{href_str}' -> '{thread_url}'")
 
@@ -369,25 +387,184 @@ class MIRCrewExtractor(ForumExtractor):
         logger.warning("No MIRCrew thread found in search.")
         return None
 
-    def extract_episode_info(self, magnet_element):
-        """Extracts episode information from the magnet context"""
+    def _extract_season_search_query(self, release_title):
+        """Extract series name and season for season-level search with enhanced logic"""
         try:
-            parent = magnet_element.find_parent()
-            if parent:
-                text = parent.get_text()
-                patterns = [
-                    r'S(\d+)E(\d+)',
-                    r'(\d+)x(\d+)',
-                    r'Ep\.?\s*(\d+)',
-                    r'Episodio\s+(\d+)',
-                ]
-                for pattern in patterns:
+            title = release_title.strip()
+
+            # Enhanced series name extraction
+            # Remove common suffixes and metadata first
+            title = re.sub(r'\s*\[.*?\]', '', title, flags=re.IGNORECASE)  # Remove [IN CORSO], [03/10], etc.
+            title = re.sub(r'\s*\(.*?\)\s*$', '', title, flags=re.IGNORECASE)  # Remove trailing parentheses
+
+            # Look for season patterns and extract series name - more comprehensive
+            season_patterns = [
+                r'\s*-\s*S\d+E\d+(?:\s*of\s*\d+)?(?:\s*-\s*\d+)?(?:\s*\[.*?\])?.*$',      # " - S5E04 of 10 [IN CORSO]"
+                r'\s*-\s*Stagione\s*\d+(?:\s*\[.*?\])?.*$', # " - Stagione 5 [IN CORSO]"
+                r'\s*-\s*Season\s*\d+(?:\s*\[.*?\])?.*$',   # " - Season 5 [IN CORSO]"
+                r'\s+(\d+)(?:st|nd|rd|th)\s+Season(?:\s+Episode\s+\d+)?.*$',  # " 5th Season" or " 5th Season Episode 3"
+                r'\s+Season\s+\d+\s+Ep(?:\.|\s)?\s*\d+.*$',  # " Season 2 Ep 5"
+                r'\s+Stagione\s+\d+\s+Ep(?:\.|\s)?\s*\d+.*$',  # " Stagione 2 Ep 5"
+                r'\s+\d+x\d+(?:-\d+)?(?:\s*\[.*?\])?.*$',  # " 5x04 [IN CORSO]"
+                # Additional patterns for edge cases
+                r'\s+Season\s+\d+(?:\s*\(.*?\))?(?:\s*\[.*?\])?.*$',   # " Season 2 (2024) [IN CORSO]"
+                r'\s*S\d+E\d+(?:\s*of\s*\d+)?(?:\s*\[.*?\])?.*$',      # " S4E08 of 12 [Multi-Subs]"
+                r'\s*S\d+E\d+(?:-\S+)*$',            # " S3E12" or " S3E12-S3E15" (allow multiple non-space sequences)
+                r'\s*\d+x\d+(?:\s*of\s*\d+)?(?:.*)?$',  # "4x08 of 12 (2024) 720p"
+            ]
+
+            series_name = title
+            for pattern in season_patterns:
+                match = re.search(pattern, series_name, re.IGNORECASE)
+                if match:
+                    series_name = series_name[:match.start()].strip()
+                    break
+
+            # Clean up series name - remove common artifacts
+            series_name = re.sub(r'\s+$', '', series_name)  # Trailing spaces
+            series_name = re.sub(r'[-\s]+$', '', series_name)  # Trailing dashes/spaces
+
+            # If no season pattern found, try to extract from common formats
+            if series_name == title:
+                # Try patterns like "Series Name (2025)" or "Series Name [IN CORSO]"
+                alt_match = re.search(r'^([^-\(\[\s]+(?:\s+[^-\(\[\s]+)*)', title)
+                if alt_match:
+                    series_name = alt_match.group(1).strip()
+
+            # Enhanced season number extraction
+            season_patterns = [
+                r'S(\d+)',           # S5E04
+                r'Stagione\s*(\d+)', # Stagione 5
+                r'Season\s*(\d+)',   # Season 5
+                r'(\d+)(?:st|nd|rd|th)\s+Season',  # 5th Season
+                r'(\d+)(?:st|nd|rd|th)\s+S',  # 5th S (season abbreviation)
+                r'(\d+)x\d+',        # 4x08 format - extract season number
+            ]
+
+            season_num = None
+            for pattern in season_patterns:
+                match = re.search(pattern, release_title, re.IGNORECASE)
+                if match:
+                    season_num = match.group(1)
+                    break
+
+            if season_num and series_name:
+                # Validate series name has minimum length
+                if len(series_name) >= 2:
+                    return f"{series_name} - Stagione {season_num}"
+
+            return None
+        except Exception as e:
+            logger.warning(f"Error extracting season search query: {e}")
+            return None
+
+    def extract_episode_info(self, magnet_element):
+        """Extracts episode information from the magnet context with enhanced pattern matching"""
+        try:
+            # Multi-level context analysis: check multiple levels up and siblings
+            context_elements = []
+            current = magnet_element
+
+            # Check parent hierarchy (up to 5 levels for better context)
+            for _ in range(5):
+                if current and current.parent:
+                    current = current.parent
+                    context_elements.append(current)
+                else:
+                    break
+
+            # Check siblings of the magnet element and its parent hierarchy
+            for elem in context_elements:
+                if hasattr(elem, 'find_all'):
+                    siblings = elem.find_all(recursive=False)
+                    context_elements.extend(siblings)
+
+            # Also check magnet element itself and immediate children
+            context_elements.append(magnet_element)
+            if hasattr(magnet_element, 'find_all'):
+                children = magnet_element.find_all(recursive=False)
+                context_elements.extend(children)
+
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_context = []
+            for elem in context_elements:
+                if elem not in seen:
+                    seen.add(elem)
+                    unique_context.append(elem)
+            context_elements = unique_context
+
+            # Combine all context text
+            context_texts = [elem.get_text() for elem in context_elements if elem]
+
+            # Enhanced patterns with comprehensive coverage - reordered for priority
+            patterns = [
+                # Combined season+episode patterns (highest priority)
+                r'S(\d+)E(\d+)(?:\s*of\s*\d+)?',  # S5E04, S5E04 of 10 (adds leading zeros)
+                r'(\d+)x(\d+)(?:-\d+)?',          # 5x04, 5x04-10
+                r'(\d+)(?:st|nd|rd|th)\s+Season\s+Episode\s+(\d+)',  # 5th Season Episode 3
+                r'Season\s+(\d+)\s+Ep(?:\.|\s)?\s*(\d+)',  # Season 2 Ep 5
+                r'Stagione\s+(\d+)\s+Ep(?:\.|\s)?\s*(\d+)',  # Stagione 2 Ep 5
+                # Season-level patterns (lower priority)
+                r'Stagione\s*(\d+)',               # Stagione 5
+                r'Season\s*(\d+)',                 # Season 5
+                r'(\d+)(?:st|nd|rd|th)\s+Season',  # 5th Season
+                # Single episode patterns (context-aware)
+                r'(?:^|[^S]\b)Ep\.?\s*(\d+)(?:-(\d+))?',      # Ep 7, Ep 7-10
+                r'(?:^|[^S]\b)Episodio\s+(\d+)(?:\s*-\s*(\d+))?',  # Episodio 7, Episodio 7-10
+                # Additional variants
+                r'Episode\s+(\d+)',               # Episode 7
+                r'Ep\s+(\d+)',                    # Ep 7 (alternative)
+            ]
+
+            # Process patterns in order of specificity
+            for text in context_texts:
+                for i, pattern in enumerate(patterns):
                     match = re.search(pattern, text, re.IGNORECASE)
                     if match:
-                        if len(match.groups()) == 2:
-                            return f"S{match.group(1).zfill(2)}E{match.group(2).zfill(2)}"
-                        else:
-                            return f"E{match.group(1).zfill(2)}"
+                        groups = match.groups()
+                        # Combined season+episode patterns
+                        if i == 0:  # S(\d+)E(\d+) pattern
+                            season = int(groups[0])
+                            episode = int(groups[1])
+                            return f"S{season:02d}E{episode:02d}"
+                        elif i == 1:  # (\d+)x(\d+) pattern
+                            season = int(groups[0])
+                            episode = int(groups[1])
+                            return f"S{season:02d}E{episode:02d}"
+                        elif i == 2:  # (\d+)(?:st|nd|rd|th)\s+Season\s+Episode\s+(\d+)
+                            season = int(groups[0])
+                            episode = int(groups[1])
+                            return f"S{season:02d}E{episode:02d}"
+                        elif i == 3:  # Season\s+(\d+)\s+Ep(?:\.|\s)?\s*(\d+)
+                            season = int(groups[0])
+                            episode = int(groups[1])
+                            return f"S{season:02d}E{episode:02d}"
+                        elif i == 4:  # Stagione\s+(\d+)\s+Ep(?:\.|\s)?\s*(\d+)
+                            season = int(groups[0])
+                            episode = int(groups[1])
+                            return f"S{season:02d}E{episode:02d}"
+                        # Season-only patterns
+                        elif i == 5:  # Stagione\s*(\d+)
+                            season = int(groups[0])
+                            return f"S{season:02d}E00"  # Season pack
+                        elif i == 6:  # Season\s*(\d+)
+                            season = int(groups[0])
+                            return f"S{season:02d}E00"  # Season pack
+                        elif i == 7:  # (\d+)(?:st|nd|rd|th)\s+Season
+                            season = int(groups[0])
+                            return f"S{season:02d}E00"  # Season pack
+                        # Single episode patterns with season context
+                        elif i >= 8:  # Single episode patterns
+                            # Check if there's season context in the same text
+                            season_context = re.search(r'S(?:tagione|eason)?\s*(\d+)', text, re.IGNORECASE)
+                            if season_context:
+                                season = int(season_context.group(1))
+                                episode = int(groups[0])
+                                return f"S{season:02d}E{episode:02d}"
+                            else:
+                                episode = int(groups[0])
+                                return f"E{episode:02d}"
             return "Unknown"
         except Exception as e:
             logger.warning(f"Error extracting episode info: {e}")

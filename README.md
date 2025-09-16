@@ -15,6 +15,17 @@ Help me pay off my home loan → [Donate on PayPal](https://paypal.me/ruggieroca
 - **Test Mode**: Safe testing without making actual changes
 - **Multi-Client Support**: Extensible to work with different torrent clients
 
+## Enhanced Pattern Matching Capabilities
+
+The script features advanced pattern matching capabilities that intelligently parse complex TV release titles to accurately extract season and episode information. This enables reliable identification of the correct episodes from forum threads, even with varied naming conventions and languages.
+
+### Supported Patterns
+
+- **Standard episode format**: `"S5E04"` → `"S05E04"` (with automatic leading zero padding)
+- **Season-level patterns**: `"Stagione 5"`, `"Season 2"`, `"3rd Season"`
+- **Single episode patterns**: `"Ep 7"`, `"Episodio 15"`
+- **Season-level search fallback**: Falls back to season-based searching when specific episode info isn't available
+
 ## Prerequisites
 
 - Python 3.7+
@@ -270,6 +281,19 @@ python tests/test_mircrew.py
 
 This allows you to test the script without making actual changes to your torrent client.
 
+### Processing Complex Release Titles
+
+The enhanced pattern matching can handle complex, real-world release titles. For example:
+
+**Input Release Title:**
+```
+Only Murders in the Building - S5E04 of 10 (2025) 1080p H264 ITA ENG EAC3 SUB ITA ENG - M&M.GP CreW
+```
+
+**Extracted Episode Info:** `S05E04`
+
+The script intelligently parses this title to extract the season (5) and episode (4) information, despite the presence of metadata like resolution, audio codecs, and crew tags.
+
 ### Manual Testing
 
 You can simulate Sonarr variables for testing:
@@ -315,6 +339,37 @@ To add support for a new torrent client:
 1. Create a new client implementing `TorrentClient`
 2. Add factory function in `torrent_client_factory.py`
 3. Set `TORRENT_CLIENT` environment variable
+
+## Testing
+
+The project includes comprehensive test coverage to ensure reliability and accuracy of the pattern matching capabilities.
+
+### Test Coverage
+
+The test suite provides extensive coverage with 18 automated test cases covering:
+
+- **Episode Pattern Matching** (9 test cases):
+  - Standard formats (`S5E04`, `3x12`)
+  - International patterns (`Stagione 5`, `Episodio 15`)
+  - Complex metadata handling
+  - Edge cases and malformatted inputs
+
+- **Season Search Extraction** (8 test cases):
+  - Season-based query generation
+  - Metadata stripping and normalization
+  - Fallback mechanisms for incomplete information
+
+- **Integration Testing**:
+  - Full workflow simulation with mock components
+  - End-to-end processing of real release titles
+
+Run the test suite using:
+
+```bash
+python tests/test_mircrew.py
+```
+
+The tests validate that the enhanced pattern matching correctly handles diverse naming conventions commonly found in torrent releases, ensuring robust episode detection across different languages and formats.
 
 ## Troubleshooting
 
