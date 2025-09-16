@@ -294,7 +294,7 @@ class MIRCrewExtractor(ForumExtractor):
             return False
 
     def search_thread_by_release_title(self, release_title):
-        """Search thread by release title using the existing session"""
+        """Search thread by release title using the existing session with enhanced fallback strategies"""
         if not self.verify_session():
             logger.warning("Session expired, attempting re-login...")
             if not self.login():
@@ -304,7 +304,7 @@ class MIRCrewExtractor(ForumExtractor):
 
         base_search_url = urljoin(MIRCREW_BASE_URL, "search.php")
 
-        # First attempt: exact match with full title
+        # Strategy 1: Exact match with full title
         logger.info(f"Searching for exact match: {release_title}")
         encoded_query = quote_plus(f"\"{release_title}\"")
         thread_url = self._perform_search(encoded_query)
@@ -313,8 +313,20 @@ class MIRCrewExtractor(ForumExtractor):
             logger.info("Found thread with exact match")
             return thread_url
 
-        # Second attempt: season-level fallback
-        logger.info("Exact match failed, trying season-level search...")
+        # Strategy 2: Enhanced metadata-aware search
+        logger.info("Exact match failed, trying enhanced metadata search...")
+        enhanced_queries = self._extract_enhanced_search_queries(release_title)
+
+        for query_type, query in enhanced_queries:
+            logger.info(f"Trying {query_type}: {query}")
+            encoded_query = quote_plus(f"\"{query}\"")
+            thread_url = self._perform_search(encoded_query)
+            if thread_url:
+                logger.info(f"Found thread with {query_type}")
+                return thread_url
+
+        # Strategy 3: Season-level fallback (original method)
+        logger.info("Enhanced searches failed, trying season-level search...")
         season_query = self._extract_season_search_query(release_title)
         if season_query:
             logger.info(f"Searching for season-level: {season_query}")
@@ -387,30 +399,89 @@ class MIRCrewExtractor(ForumExtractor):
         logger.warning("No MIRCrew thread found in search.")
         return None
 
-    def _extract_season_search_query(self, release_title):
-        """Extract series name and season for season-level search with enhanced logic"""
+    def _extract_enhanced_search_queries(self, release_title):
+        """Extract multiple enhanced search queries from release title including metadata"""
+        queries = []
+
+        try:
+            # Extract base series name (remove season/episode info)
+            base_title = self._extract_base_series_name(release_title)
+
+            if not base_title:
+                return queries
+
+            # Extract metadata components
+            resolution = self._extract_resolution(release_title)
+            codec = self._extract_codec(release_title)
+            year = self._extract_year(release_title)
+            season_num = self._extract_season_number(release_title)
+
+            # Strategy 1: Series + Season + Resolution + Codec
+            if season_num and (resolution or codec):
+                metadata_parts = []
+                if resolution:
+                    metadata_parts.append(resolution)
+                if codec:
+                    metadata_parts.append(codec)
+
+                if metadata_parts:
+                    query = f"{base_title} Stagione {season_num} {' '.join(metadata_parts)}"
+                    queries.append(("season-metadata", query))
+
+            # Strategy 2: Series + Resolution + Codec (season-agnostic)
+            if resolution or codec:
+                metadata_parts = []
+                if resolution:
+                    metadata_parts.append(resolution)
+                if codec:
+                    metadata_parts.append(codec)
+
+                if metadata_parts:
+                    query = f"{base_title} {' '.join(metadata_parts)}"
+                    queries.append(("metadata-only", query))
+
+            # Strategy 3: Series + Resolution
+            if resolution:
+                query = f"{base_title} {resolution}"
+                queries.append(("resolution-only", query))
+
+            # Strategy 4: Series + Codec
+            if codec:
+                query = f"{base_title} {codec}"
+                queries.append(("codec-only", query))
+
+            # Strategy 5: Series + Year (if available)
+            if year:
+                query = f"{base_title} {year}"
+                queries.append(("year-metadata", query))
+
+            logger.debug(f"Generated {len(queries)} enhanced search queries")
+            return queries
+
+        except Exception as e:
+            logger.warning(f"Error extracting enhanced search queries: {e}")
+            return []
+
+    def _extract_base_series_name(self, release_title):
+        """Extract the base series name without season/episode metadata"""
         try:
             title = release_title.strip()
 
-            # Enhanced series name extraction
-            # Remove common suffixes and metadata first
+            # Remove common suffixes and metadata
             title = re.sub(r'\s*\[.*?\]', '', title, flags=re.IGNORECASE)  # Remove [IN CORSO], [03/10], etc.
-            title = re.sub(r'\s*\(.*?\)\s*$', '', title, flags=re.IGNORECASE)  # Remove trailing parentheses
+            title = re.sub(r'\s*\([^)]*\)\s*$', '', title, flags=re.IGNORECASE)  # Remove trailing parentheses
 
-            # Look for season patterns and extract series name - more comprehensive
+            # Look for season patterns and extract series name
             season_patterns = [
-                r'\s*-\s*S\d+E\d+(?:\s*of\s*\d+)?(?:\s*-\s*\d+)?(?:\s*\[.*?\])?.*$',      # " - S5E04 of 10 [IN CORSO]"
-                r'\s*-\s*Stagione\s*\d+(?:\s*\[.*?\])?.*$', # " - Stagione 5 [IN CORSO]"
-                r'\s*-\s*Season\s*\d+(?:\s*\[.*?\])?.*$',   # " - Season 5 [IN CORSO]"
-                r'\s+(\d+)(?:st|nd|rd|th)\s+Season(?:\s+Episode\s+\d+)?.*$',  # " 5th Season" or " 5th Season Episode 3"
-                r'\s+Season\s+\d+\s+Ep(?:\.|\s)?\s*\d+.*$',  # " Season 2 Ep 5"
-                r'\s+Stagione\s+\d+\s+Ep(?:\.|\s)?\s*\d+.*$',  # " Stagione 2 Ep 5"
-                r'\s+\d+x\d+(?:-\d+)?(?:\s*\[.*?\])?.*$',  # " 5x04 [IN CORSO]"
-                # Additional patterns for edge cases
-                r'\s+Season\s+\d+(?:\s*\(.*?\))?(?:\s*\[.*?\])?.*$',   # " Season 2 (2024) [IN CORSO]"
-                r'\s*S\d+E\d+(?:\s*of\s*\d+)?(?:\s*\[.*?\])?.*$',      # " S4E08 of 12 [Multi-Subs]"
-                r'\s*S\d+E\d+(?:-\S+)*$',            # " S3E12" or " S3E12-S3E15" (allow multiple non-space sequences)
-                r'\s*\d+x\d+(?:\s*of\s*\d+)?(?:.*)?$',  # "4x08 of 12 (2024) 720p"
+                r'\s*-\s*S\d+E\d+(?:\s*of\s*\d+)?(?:\s*-\s*\d+)?(?:\s*\[.*?\])?.*$',
+                r'\s*-\s*Stagione\s*\d+(?:\s*\[.*?\])?.*$',
+                r'\s*-\s*Season\s*\d+(?:\s*\[.*?\])?.*$',
+                r'\s+(\d+)(?:st|nd|rd|th)\s+Season(?:\s+Episode\s+\d+)?.*$',
+                r'\s+Season\s+\d+\s+Ep(?:\.|\s)?\s*\d+.*$',
+                r'\s+Stagione\s+\d+\s+Ep(?:\.|\s)?\s*\d+.*$',
+                r'\s+\d+x\d+(?:-\d+)?(?:\s*\[.*?\])?.*$',
+                r'\s+S\d+E\d+(?:\s*of\s*\d+)?(?:\s*\[.*?\])?.*$',
+                r'\s*\d+x\d+(?:\s*of\s*\d+)?(?:.*)?$',
             ]
 
             series_name = title
@@ -420,38 +491,79 @@ class MIRCrewExtractor(ForumExtractor):
                     series_name = series_name[:match.start()].strip()
                     break
 
-            # Clean up series name - remove common artifacts
+            # Clean up series name
             series_name = re.sub(r'\s+$', '', series_name)  # Trailing spaces
             series_name = re.sub(r'[-\s]+$', '', series_name)  # Trailing dashes/spaces
 
-            # If no season pattern found, try to extract from common formats
-            if series_name == title:
-                # Try patterns like "Series Name (2025)" or "Series Name [IN CORSO]"
-                alt_match = re.search(r'^([^-\(\[\s]+(?:\s+[^-\(\[\s]+)*)', title)
-                if alt_match:
-                    series_name = alt_match.group(1).strip()
+            # Validate series name
+            if len(series_name) >= 2:
+                return series_name
 
-            # Enhanced season number extraction
-            season_patterns = [
-                r'S(\d+)',           # S5E04
-                r'Stagione\s*(\d+)', # Stagione 5
-                r'Season\s*(\d+)',   # Season 5
-                r'(\d+)(?:st|nd|rd|th)\s+Season',  # 5th Season
-                r'(\d+)(?:st|nd|rd|th)\s+S',  # 5th S (season abbreviation)
-                r'(\d+)x\d+',        # 4x08 format - extract season number
-            ]
+            return None
+        except Exception as e:
+            logger.warning(f"Error extracting base series name: {e}")
+            return None
 
-            season_num = None
-            for pattern in season_patterns:
-                match = re.search(pattern, release_title, re.IGNORECASE)
-                if match:
-                    season_num = match.group(1)
-                    break
+    def _extract_resolution(self, release_title):
+        """Extract resolution from release title (e.g., 1080p, 720p, 4K)"""
+        patterns = [
+            r'\b(1080p|720p|2160p|4K|UHD)\b',
+            r'\b(\d{3,4}p)\b',
+        ]
 
-            if season_num and series_name:
-                # Validate series name has minimum length
-                if len(series_name) >= 2:
-                    return f"{series_name} - Stagione {season_num}"
+        for pattern in patterns:
+            match = re.search(pattern, release_title, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        return None
+
+    def _extract_codec(self, release_title):
+        """Extract codec from release title (e.g., H264, H265, x265)"""
+        patterns = [
+            r'\b(H264|H265|x264|x265|AVC|HEVC)\b',
+            r'\b(XviD|DivX)\b',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, release_title, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        return None
+
+    def _extract_year(self, release_title):
+        """Extract year from release title"""
+        match = re.search(r'\b(19|20)\d{2}\b', release_title)
+        if match:
+            return match.group(0)
+        return None
+
+    def _extract_season_number(self, release_title):
+        """Extract season number from release title"""
+        patterns = [
+            r'S(\d+)',
+            r'Stagione\s*(\d+)',
+            r'Season\s*(\d+)',
+            r'(\d+)(?:st|nd|rd|th)\s+Season',
+            r'(\d+)x\d+',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, release_title, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        return None
+
+    def _extract_season_search_query(self, release_title):
+        """Extract series name and season for season-level search with enhanced logic"""
+        try:
+            base_name = self._extract_base_series_name(release_title)
+            season_num = self._extract_season_number(release_title)
+
+            if season_num and base_name:
+                return f"{base_name} - Stagione {season_num}"
 
             return None
         except Exception as e:
