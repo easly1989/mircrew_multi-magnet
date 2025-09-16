@@ -1,7 +1,8 @@
 #!/bin/sh
 
-# Redirect all output to stderr for better Sonarr logging
-exec >&2
+# Debug: Check environment variables
+echo "Debug: sonarr_eventtype = '$sonarr_eventtype'"
+env | grep -i sonarr >&2
 
 # Set up local Python package directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -42,9 +43,9 @@ check_python_module dotenv || pip3 install --target="$LOCAL_LIB" --no-cache-dir 
 cd "$SCRIPT_DIR"
 
 # Log the event type for debugging
-echo "Sonarr Event Type: $SONARR_EVENTTYPE"
+echo "Sonarr Event Type: $sonarr_eventtype"
 
-if [ "$SONARR_EVENTTYPE" = "Test" ]; then
+if [ "$sonarr_eventtype" = "Test" ]; then
     python3 tests/test_mircrew.py
 else
     python3 main.py
