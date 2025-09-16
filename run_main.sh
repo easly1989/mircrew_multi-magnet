@@ -2,7 +2,7 @@
 
 # Debug: Check environment variables
 echo "Debug: sonarr_eventtype = '$sonarr_eventtype'"
-env | grep -i sonarr >&2
+env | grep -i sonarr >&1
 
 # Set up local Python package directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
