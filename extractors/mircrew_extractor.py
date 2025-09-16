@@ -574,30 +574,225 @@ class MIRCrewExtractor(ForumExtractor):
         # Find episode codes like S01E05 in the magnet title
         return set(re.findall(r"S\d{2}E\d{2}", magnet_title, re.IGNORECASE))
 
-    def extract_magnets_from_thread(self, thread_url):
-        """Extracts all magnet links from a MIRCrew thread"""
+    def extract_magnets_from_thread(self, thread_url, forum_post_url=None):
+        """
+        Extracts all magnet links from a MIRCrew thread with enhanced backward compatibility.
+
+        Enhanced Backward Compatibility Workflow:
+        1. Feature detection: Check availability of new metadata fields (forum_post_url)
+        2. Primary extraction: Attempt improved regex pattern on thread page
+        3. Legacy path: If forum_post_url missing, use legacy extraction with enhanced patterns
+        4. Fallback path: If forum_post_url available, fetch full post content for fallback
+        5. Return results with appropriate logging
+
+        Args:
+            thread_url: URL of the forum thread
+            forum_post_url: Optional URL of the specific forum post for fallback (new metadata field)
+
+        Returns:
+            List of dictionaries containing magnet information
+        """
         try:
             logger.info(f"Extracting magnets from: {thread_url}")
-            resp = self.session.get(thread_url)
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            magnets = []
-            magnet_links = soup.find_all('a', href=re.compile(r'magnet:\?xt='))
-            for link in magnet_links:
-                magnet_url = link.attrs.get('href') if isinstance(link, Tag) else None
-                if not magnet_url:
-                    continue
-                if magnet_url:
+
+            # Feature detection: Log availability of new metadata fields
+            has_forum_post_url = forum_post_url is not None
+            if has_forum_post_url:
+                logger.debug("New metadata available: forum_post_url present")
+            else:
+                logger.info("Legacy mode: forum_post_url not available, using backward compatible extraction")
+
+            # Primary extraction attempt with improved regex pattern
+            magnets = self._extract_magnets_from_page(thread_url)
+
+            # If primary extraction found magnets, return them
+            if magnets:
+                logger.info(f"Primary extraction successful: Found {len(magnets)} magnet links")
+                return magnets
+
+            # Backward compatibility paths based on available metadata
+            if has_forum_post_url:
+                # New path: Use forum_post_url for enhanced fallback
+                logger.info("Primary extraction failed, triggering enhanced fallback mechanism")
+                logger.info(f"Fetching forum post content from: {forum_post_url}")
+                fallback_magnets = self._extract_magnets_from_page(forum_post_url)
+
+                if fallback_magnets:
+                    logger.info(f"Enhanced fallback extraction successful: Found {len(fallback_magnets)} magnet links")
+                    return fallback_magnets
+                else:
+                    logger.warning("Enhanced fallback extraction also failed to find magnet links")
+            else:
+                # Legacy path: Enhanced extraction from thread URL only
+                logger.info("Using legacy extraction path without forum_post_url")
+                legacy_magnets = self._extract_magnets_legacy_mode(thread_url)
+
+                if legacy_magnets:
+                    logger.info(f"Legacy extraction successful: Found {len(legacy_magnets)} magnet links")
+                    return legacy_magnets
+                else:
+                    logger.warning("Legacy extraction also failed to find magnet links")
+
+            logger.info("No magnet links found after all extraction attempts")
+            return []
+
+        except Exception as e:
+            logger.error(f"Error extracting magnets: {e}")
+            return []
+
+    def _extract_magnets_from_page(self, url, max_retries=3):
+        """
+        Helper method to extract magnets from a single page with retry logic.
+
+        Args:
+            url: URL to fetch and extract from
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            List of magnet dictionaries or empty list on failure
+        """
+        for attempt in range(max_retries):
+            try:
+                # Fetch page content with timeout
+                resp = self.session.get(url, timeout=30)
+                resp.raise_for_status()
+
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                magnets = []
+
+                # Primary regex pattern for magnet link extraction
+                magnet_pattern = r'magnet:\?xt=urn:(?:btih|ed2k):[a-fA-F0-9]{32,64}'
+                magnet_links = soup.find_all('a', href=re.compile(magnet_pattern, re.IGNORECASE))
+
+                for link in magnet_links:
+                    if not isinstance(link, Tag):
+                        continue
+
+                    magnet_url = link.attrs.get('href')
+                    if not magnet_url:
+                        continue
+
                     magnet_title = extract_magnet_title_from_url(magnet_url)
                     episode_info = self.extract_episode_info(link)
+
                     magnets.append({
                         'magnet': str(magnet_url).strip(),
                         'episode_info': episode_info,
                         'magnet_title': magnet_title
                     })
-            logger.info(f"Found {len(magnets)} magnet links")
+
+                logger.debug(f"Extracted {len(magnets)} magnet links from {url}")
+                return magnets
+
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"HTTP error on attempt {attempt+1}/{max_retries} for {url}: {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to fetch {url} after {max_retries} attempts")
+                    return []
+                # Exponential backoff before retry
+                import time
+                time.sleep(2 ** attempt)
+
+            except Exception as e:
+                logger.error(f"Unexpected error extracting from {url}: {e}")
+                return []
+
+    def _extract_magnets_legacy_mode(self, thread_url):
+        """
+        Enhanced legacy extraction method for backward compatibility.
+
+        This method is used when forum_post_url is not available (legacy configurations).
+        It attempts multiple extraction strategies to maximize magnet discovery:
+
+        1. Enhanced regex pattern search
+        2. Alternative pattern matching for older post formats
+        3. Context-aware extraction with improved element selection
+
+        Args:
+            thread_url: URL of the forum thread
+
+        Returns:
+            List of magnet dictionaries or empty list on failure
+        """
+        logger.debug(f"Attempting legacy extraction from: {thread_url}")
+
+        try:
+            # Fetch the thread page
+            resp = self.session.get(thread_url, timeout=30)
+            resp.raise_for_status()
+
+            soup = BeautifulSoup(resp.text, 'html.parser')
+
+            # Legacy extraction strategy 1: Enhanced magnet pattern search
+            # Look for magnet links in various content areas for legacy compatibility
+            magnet_pattern = r'magnet:\?xt=urn:(?:btih|ed2k):[a-zA-Z0-9]{8,64}(?:&.*)?'
+
+            # Search in multiple areas of the page for legacy compatibility
+            search_areas = [
+                soup,  # Full page
+                soup.find('div', {'class': 'content'}),  # Main content area
+                soup.find('div', {'class': 'postbody'}),  # Post body
+                soup.find('div', {'class': 'post-content'}),  # Alternative content area
+            ]
+
+            magnets = []
+
+            for area in search_areas:
+                if not area:
+                    continue
+
+                # Find all magnet links in this area
+                magnet_links = area.find_all('a', href=re.compile(magnet_pattern))
+
+                for link in magnet_links:
+                    if not isinstance(link, Tag):
+                        continue
+
+                    magnet_url = link.attrs.get('href')
+                    if not magnet_url:
+                        continue
+
+                    # Skip duplicates
+                    if any(m['magnet'] == magnet_url for m in magnets):
+                        continue
+
+                    magnet_title = extract_magnet_title_from_url(magnet_url)
+                    episode_info = self.extract_episode_info(link)
+
+                    magnets.append({
+                        'magnet': str(magnet_url).strip(),
+                        'episode_info': episode_info,
+                        'magnet_title': magnet_title
+                    })
+
+                    logger.debug(f"Found magnet in legacy extraction: {magnet_title}")
+
+            # Legacy extraction strategy 2: Alternative text-based patterns
+            # Some older posts might have magnet links in plain text format
+            if not magnets:
+                text_content = soup.get_text()
+                # Look for magnet links that might not be in <a> tags
+                alt_magnet_matches = re.findall(magnet_pattern, text_content)
+
+                for magnet_match in alt_magnet_matches:
+                    # Skip if we already have this magnet
+                    if any(m['magnet'] == magnet_match for m in magnets):
+                        continue
+
+                    magnet_title = extract_magnet_title_from_url(magnet_match)
+                    magnets.append({
+                        'magnet': str(magnet_match).strip(),
+                        'episode_info': 'Unknown',  # Can't extract from plain text
+                        'magnet_title': magnet_title
+                    })
+
+                    logger.debug(f"Found magnet in legacy text extraction: {magnet_title}")
+
+            logger.debug(f"Legacy extraction found {len(magnets)} magnet links")
             return magnets
+
         except Exception as e:
-            logger.error(f"Error extracting magnets: {e}")
+            logger.warning(f"Error in legacy extraction: {e}")
             return []
 
     def find_original_torrent(self, original_torrents, target_magnet_hash):
