@@ -28,11 +28,11 @@ def main():
     logger.info("=== Starting Multi-Forum Multi-Magnet Script ===")
 
     # Read environment variables from Sonarr
-    series_title = os.environ.get('sonarr_series_title', '')
-    episode_file_relative_path = os.environ.get('sonarr_episodefile_relativepath', '')
-    release_title = os.environ.get('sonarr_release_title', '')
-    season_number = os.environ.get('sonarr_episode_seasonnumber', '')
-    episode_numbers = os.environ.get('sonarr_episode_episodenumbers', '')
+    series_title = os.environ.get('SONARR_SERIES_TITLE', '')
+    episode_file_relative_path = os.environ.get('SONARR_EPISODEFILE_RELATIVEPATH', '')
+    release_title = os.environ.get('SONARR_RELEASE_TITLE', '')
+    season_number = os.environ.get('SONARR_EPISODE_SEASONNUMBER', '')
+    episode_numbers = os.environ.get('SONARR_EPISODE_EPISODENUMBERS', '')
 
     logger.info(f"Series: {series_title}")
     logger.info(f"Episode path: {episode_file_relative_path}")
