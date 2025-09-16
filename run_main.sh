@@ -91,6 +91,13 @@ check_python_module bs4 || install_package beautifulsoup4 bs4 || exit 1
 check_python_module dotenv || install_package python-dotenv dotenv || exit 1
 echo "=== Package installation completed ===" >&2
 
+# Install pytest plugins for test mode
+if [ "$sonarr_eventtype" = "Test" ]; then
+    echo "=== Installing pytest plugins ===" >&2
+    check_python_module pytest_mock || install_package pytest-mock pytest_mock || exit 1
+    echo "=== Pytest plugins installation completed ===" >&2
+fi
+
 # Now run the Python script, after ensuring you are in the correct directory
 echo "=== Preparing to execute Python script ===" >&2
 echo "Changing to script directory: $SCRIPT_DIR" >&2
