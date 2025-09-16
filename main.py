@@ -99,26 +99,54 @@ def main():
         needed_episodes = extractor.parse_needed_episodes(episode_file_relative_path)
         logger.info(f"Episodes from file path: {needed_episodes}")
 
-    # If still no episodes found, try to extract season from release_title and process all episodes
+    # If still no episodes found, try to extract season and episode from release_title
     if not needed_episodes:
-        # Try to extract season from release_title
-        season_match = re.search(r'(?:stagione|season)\s*(\d+)', release_title, re.IGNORECASE)
-        if season_match:
-            extracted_season = int(season_match.group(1))
-            logger.info(f"Season extracted from release_title: {extracted_season}")
-            # When no specific episodes are provided, process all episodes of this season
-            process_all_episodes = True
-            logger.info("No specific episodes provided - I will process all episodes in the thread")
+        logger.info("No episodes from Sonarr variables, trying to parse from release title...")
+
+        # Try to extract specific episode (like S5E04)
+        episode_match = re.search(r'S(\d+)E(\d+)', release_title, re.IGNORECASE)
+        if episode_match:
+            season = int(episode_match.group(1))
+            episode = int(episode_match.group(2))
+            needed_episodes = {f"S{season:02d}E{episode:02d}"}
+            logger.info(f"Episode extracted from release title: {needed_episodes}")
         else:
-            logger.warning("Unable to determine season or episodes - I will process all episodes in the thread")
-            process_all_episodes = True
+            # Fallback to season-level extraction
+            season_match = re.search(r'(?:stagione|season)\s*(\d+)', release_title, re.IGNORECASE)
+            if season_match:
+                extracted_season = int(season_match.group(1))
+                logger.info(f"Season extracted from release_title: {extracted_season}")
+                # When no specific episodes are provided, process all episodes of this season
+                process_all_episodes = True
+                logger.info("No specific episodes provided - I will process all episodes in the thread")
+            else:
+                logger.warning("Unable to determine season or episodes from release title - I will process all episodes in the thread")
+                process_all_episodes = True
 
     # NEW: Check existing episodes in Sonarr for intelligent filtering
     existing_episodes = set()
+    logger.info(f"Sonarr API URL: {sonarr_api.base_url}")
+    logger.info(f"Sonarr API Key configured: {'Yes' if sonarr_api.api_key else 'No'}")
+
     if series_title and sonarr_api.base_url and sonarr_api.api_key:
+        logger.info(f"Checking existing episodes for series: '{series_title}'")
         existing_episodes = sonarr_api.get_existing_episodes(series_title)
         if existing_episodes:
             logger.info(f"Existing episodes in library: {sorted(existing_episodes)}")
+        else:
+            logger.warning("Sonarr API call succeeded but no existing episodes found")
+            logger.warning("This might mean:")
+            logger.warning("  - Series name doesn't match exactly in Sonarr")
+            logger.warning("  - Episodes are not marked as 'downloaded' in Sonarr")
+            logger.warning("  - API key or URL is incorrect")
+    else:
+        logger.warning("Sonarr API not configured - skipping episode check")
+        if not series_title:
+            logger.warning("  - No series title provided")
+        if not sonarr_api.base_url:
+            logger.warning("  - No Sonarr URL configured (SONARR_APPLICATIONURL)")
+        if not sonarr_api.api_key:
+            logger.warning("  - No Sonarr API key configured (SONARR_APIKEY)")
 
     if process_all_episodes:
         logger.info("Mode: process all episodes")
