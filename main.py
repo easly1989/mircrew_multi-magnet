@@ -12,6 +12,7 @@ import sys
 import re
 import time
 import logging
+import requests
 dotenv.load_dotenv()
 
 # Setup logging
@@ -23,6 +24,10 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Import Sonarr API client
+from api import SonarrAPI
+
 def main():
     """Main function of the script"""
     logger.info("=== Starting Multi-Forum Multi-Magnet Script ===")
@@ -42,6 +47,9 @@ def main():
     if not release_title:
         logger.error("Variable 'sonarr_release_title' not found, exiting.")
         sys.exit(1)
+
+    # Initialize Sonarr API client to check existing episodes
+    sonarr_api = SonarrAPI()
 
     # Initialize forum extractor using factory
     from extractors.forum_extractor_factory import create_forum_extractor
@@ -105,10 +113,31 @@ def main():
             logger.warning("Unable to determine season or episodes - I will process all episodes in the thread")
             process_all_episodes = True
 
+    # NEW: Check existing episodes in Sonarr for intelligent filtering
+    existing_episodes = set()
+    if series_title and sonarr_api.base_url and sonarr_api.api_key:
+        existing_episodes = sonarr_api.get_existing_episodes(series_title)
+        if existing_episodes:
+            logger.info(f"Existing episodes in library: {sorted(existing_episodes)}")
+
     if process_all_episodes:
         logger.info("Mode: process all episodes")
+        # Even in "process all" mode, we can be smart and skip already downloaded episodes
+        if existing_episodes:
+            logger.info("Will skip episodes already in library")
+        else:
+            logger.warning("No existing episodes found in Sonarr - will download all found episodes")
     else:
         logger.info(f"Final needed episodes: {needed_episodes}")
+        # Check if we already have the needed episodes
+        if needed_episodes and existing_episodes:
+            missing_episodes = needed_episodes - existing_episodes
+            if not missing_episodes:
+                logger.info("All needed episodes already exist in library - skipping download")
+                return
+            elif len(missing_episodes) < len(needed_episodes):
+                logger.info(f"Some episodes already exist. Missing episodes: {sorted(missing_episodes)}")
+                needed_episodes = missing_episodes
 
     time.sleep(3)
 
@@ -129,6 +158,19 @@ def main():
 
         episode_codes_found = extractor.extract_episode_codes(magnet_title)
         filter_by_codes = bool(needed_episodes) and not process_all_episodes
+
+        # NEW: Skip if episode already exists (intelligent filtering)
+        if episode_codes_found and existing_episodes:
+            already_exists = episode_codes_found.intersection(existing_episodes)
+            if already_exists:
+                logger.info(f"Skipping {magnet_title} - already exists in library: {already_exists}")
+                # If this is the first magnet (original torrent), we might want to keep it anyway
+                # in case it contains other needed episodes
+                if i == 0 and process_all_episodes and len(episode_codes_found) > len(already_exists):
+                    remaining_episodes = episode_codes_found - already_exists
+                    logger.info(f"But keeping first magnet as it contains additional episodes: {remaining_episodes}")
+                else:
+                    continue
 
         # Management of original torrent removal if necessary
         if i == 0 and first_magnet_hash and not original_torrent_removed:
@@ -173,7 +215,6 @@ def main():
 
     logger.info(f"Processed {len(magnets)} magnets, added/kept {added_count}")
     logger.info("=== Script completed ===")
-
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ if [ "$sonarr_eventtype" = "Test" ]; then
     echo "Running tests..."
     python3 -c "import pytest" 2>/dev/null || install_package pytest pytest || exit 1
     python3 -c "import pytest_mock" 2>/dev/null || install_package pytest-mock pytest_mock || exit 1
-    if ! python3 -m pytest tests/test_mircrew.py -v; then
+    if ! python3 -m pytest tests/ -v; then
         echo "ERROR: Test execution failed" >&2
         exit 1
     fi
