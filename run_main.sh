@@ -111,10 +111,16 @@ if [ "$sonarr_eventtype" = "Test" ]; then
     echo "Checking pytest..." >&2
     check_python_module pytest || install_package pytest pytest || exit 1
     echo "Running tests with pytest..." >&2
-    if python3 -m pytest tests/test_mircrew.py -v; then
+    echo "Command: python3 -m pytest tests/test_mircrew.py -v" >&2
+    # Capture pytest output even on failure
+    if pytest_output=$(python3 -m pytest tests/test_mircrew.py -v 2>&1); then
         echo "✓ Test execution completed successfully" >&2
+        echo "Pytest output:" >&2
+        echo "$pytest_output" >&2
     else
-        echo "ERROR: Test execution failed" >&2
+        echo "ERROR: Test execution failed with exit code $?" >&2
+        echo "Pytest error output:" >&2
+        echo "$pytest_output" >&2
         exit 1
     fi
 else
