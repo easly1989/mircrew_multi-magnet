@@ -397,7 +397,7 @@ def test_season_search_extraction(mock_torrent_client):
         ("Italian Season Ep - Stagione 2 Ep 5 [IN CORSO]", "Italian Season Ep - Stagione 2"),
         ("Complex x Format 4x08 of 12 (2024) 720p", "Complex x Format - Stagione 4"),
         # Edge cases
-        ("Series Name S3E12-S3E15", "Series Name S3E12 - Stagione 3"),
+        ("Series Name S3E12-S3E15", "Series Name - Stagione 3"),  # Multi-episode range removed
         ("Show with 5th Season Episode 8", "Show with - Stagione 5"),
     ]
 
@@ -589,3 +589,524 @@ def test_backward_compatibility_error_handling(mock_torrent_client, mocker):
 
     result = extractor.extract_magnets_from_thread("http://example.com/thread", "http://example.com/post")
     assert result == []
+
+
+# ===== THREAD ID CACHING SYSTEM TESTS =====
+
+def test_cache_initialization(mock_torrent_client, tmp_path, mocker):
+    """Test cache initialization and loading"""
+    import tempfile
+    import os
+
+    # Create a temporary cache file
+    cache_file = tmp_path / "test_cache.yml"
+    cache_data = {
+        'thread_cache': {
+            'Test Series S01': '12345',
+            'Another Show S02': '67890'
+        }
+    }
+
+    # Write test cache data
+    import yaml
+    with open(cache_file, 'w', encoding='utf-8') as f:
+        yaml.dump(cache_data, f)
+
+    # Create extractor and patch cache_file attribute
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+
+    # Re-initialize cache to load from the new file
+    extractor.load_cache()
+
+    # Verify cache loaded
+    assert extractor.cache_loaded is True
+    assert len(extractor.thread_id_cache) == 2
+    assert extractor.get_cached_thread_id('Test Series', '1') == '12345'
+    assert extractor.get_cached_thread_id('Another Show', '2') == '67890'
+
+
+def test_cache_initialization_empty_file(mock_torrent_client, tmp_path, mocker):
+    """Test cache initialization with empty/nonexistent file"""
+    cache_file = tmp_path / "empty_cache.yml"
+
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+    extractor.load_cache()  # Re-load cache
+
+    # Should initialize with empty cache
+    assert extractor.cache_loaded is True
+    assert len(extractor.thread_id_cache) == 0
+    assert extractor.get_cached_thread_id('Test', '1') is None
+
+
+def test_cache_key_normalization(mock_torrent_client):
+    """Test cache key normalization for season formats"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Test various season input formats
+    test_cases = [
+        ('Test Show', '1', 'Test Show S01'),
+        ('Test Show', '01', 'Test Show S01'),
+        ('Test Show', 1, 'Test Show S01'),
+        ('Test Show', 'S1', 'Test Show S01'),
+        ('Test Show', 'S01', 'Test Show S01'),
+    ]
+
+    for series, season, expected_key in test_cases:
+        # Add to cache and verify key
+        extractor.cache_thread_id(series, season, '12345')
+        assert expected_key in extractor.thread_id_cache
+        assert extractor.thread_id_cache[expected_key]['thread_id'] == '12345'
+
+        # Retrieve and verify
+        result = extractor.get_cached_thread_id(series, season)
+        assert result == '12345'
+
+
+def test_cache_operations_basic(mock_torrent_client, tmp_path, mocker):
+    """Test basic cache operations: add, retrieve, persist"""
+    cache_file = tmp_path / "cache_ops.yml"
+
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+    extractor.load_cache()  # Ensure using our cache file
+
+    # Initially empty
+    assert len(extractor.thread_id_cache) == 0
+
+    # Add entries
+    extractor.cache_thread_id('Breaking Bad', '1', '11111')
+    extractor.cache_thread_id('Breaking Bad', '2', '22222')
+    extractor.cache_thread_id('The Office', '1', '33333')
+
+    # Verify in memory
+    assert len(extractor.thread_id_cache) == 3
+    assert extractor.get_cached_thread_id('Breaking Bad', '1') == '11111'
+    assert extractor.get_cached_thread_id('Breaking Bad', '2') == '22222'
+    assert extractor.get_cached_thread_id('The Office', '1') == '33333'
+
+    # Verify persistence - create new instance
+    extractor2 = MIRCrewExtractor(mock_torrent_client)
+    extractor2.cache_file = str(cache_file)
+    extractor2.load_cache()
+    assert len(extractor2.thread_id_cache) == 3
+    assert extractor2.get_cached_thread_id('Breaking Bad', '1') == '11111'
+
+
+def test_cache_invalid_inputs(mock_torrent_client, tmp_path, mocker):
+    """Test cache behavior with invalid inputs"""
+    # Use a fresh cache file to avoid contamination from other tests
+    cache_file = tmp_path / "invalid_inputs_cache.yml"
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+
+    # Clear any existing cache
+    extractor.thread_id_cache = {}
+    extractor.save_cache()
+
+    # Invalid inputs should not crash or add entries
+    extractor.cache_thread_id(None, '1', '123')
+    extractor.cache_thread_id('Test', None, '123')
+    extractor.cache_thread_id('Test', '1', None)
+    extractor.cache_thread_id('', '1', '123')
+    extractor.cache_thread_id('Test', '', '123')
+    extractor.cache_thread_id('Test', '1', '')
+
+    # Should still be empty
+    assert len(extractor.thread_id_cache) == 0
+
+    # Invalid retrievals
+    assert extractor.get_cached_thread_id(None, '1') is None
+    assert extractor.get_cached_thread_id('Test', None) is None
+    assert extractor.get_cached_thread_id('', '1') is None
+    assert extractor.get_cached_thread_id('Test', '') is None
+
+
+def test_cache_miss_handling(mock_torrent_client):
+    """Test cache miss scenarios"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Add one entry
+    extractor.cache_thread_id('Cached Show', '1', '99999')
+
+    # Valid cache hit
+    assert extractor.get_cached_thread_id('Cached Show', '1') == '99999'
+
+    # Cache misses
+    assert extractor.get_cached_thread_id('Different Show', '1') is None
+    assert extractor.get_cached_thread_id('Cached Show', '2') is None
+    assert extractor.get_cached_thread_id('cached show', '1') is None  # Case sensitive
+
+
+def test_search_thread_cache_hit(mock_torrent_client, mocker):
+    """Test search_thread with cache hit - should use search_thread_by_id"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Mock the metadata extraction to return known values
+    mocker.patch.object(extractor, '_extract_base_series_name', return_value='Test Series')
+    mocker.patch.object(extractor, '_extract_season_number', return_value='1')
+
+    # Add to cache
+    extractor.cache_thread_id('Test Series', '1', '55555')
+
+    # Mock search_thread_by_id to verify it's called
+    mock_search_by_id = mocker.patch.object(extractor, 'search_thread_by_id', return_value='http://example.com/thread/55555')
+
+    # Mock _perform_search to ensure it's NOT called
+    mock_perform_search = mocker.patch.object(extractor, '_perform_search', return_value=None)
+
+    result = extractor.search_thread('Test Series S01 query')
+
+    # Should return cached result
+    assert result == 'http://example.com/thread/55555'
+    mock_search_by_id.assert_called_once_with('55555')
+    mock_perform_search.assert_not_called()
+
+
+def test_search_thread_cache_miss(mock_torrent_client, tmp_path, mocker):
+    """Test search_thread with cache miss - should perform search and cache result"""
+    cache_file = tmp_path / "cache_miss_test.yml"
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+    extractor.thread_id_cache = {}  # Start with empty cache
+
+    # Mock metadata extraction
+    mocker.patch.object(extractor, '_extract_base_series_name', return_value='New Series')
+    mocker.patch.object(extractor, '_extract_season_number', return_value='1')
+
+    # Ensure cache miss
+    assert extractor.get_cached_thread_id('New Series', '1') is None
+
+    # Mock search result
+    mock_thread_url = 'https://mircrew-releases.org/viewtopic.php?f=51&t=77777'
+    mock_perform_search = mocker.patch.object(extractor, '_perform_search', return_value=mock_thread_url)
+
+    # Mock extract_thread_id_from_url
+    mocker.patch.object(extractor, 'extract_thread_id_from_url', return_value='77777')
+
+    result = extractor.search_thread('New Series S01 query')
+
+    # Should return search result
+    assert result == mock_thread_url
+
+    # Should have cached the result
+    assert extractor.get_cached_thread_id('New Series', '1') == '77777'
+
+
+def test_search_thread_no_metadata(mock_torrent_client, mocker):
+    """Test search_thread without metadata - should skip cache and search directly"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Clear any existing cache entries from other tests
+    extractor.thread_id_cache = {}
+
+    # Mock metadata extraction to return None
+    mocker.patch.object(extractor, '_extract_base_series_name', return_value=None)
+    mocker.patch.object(extractor, '_extract_season_number', return_value=None)
+
+    # Mock search
+    mock_thread_url = 'https://mircrew-releases.org/viewtopic.php?f=51&t=88888'
+    mock_perform_search = mocker.patch.object(extractor, '_perform_search', return_value=mock_thread_url)
+
+    result = extractor.search_thread('some random query')
+
+    # Should return search result
+    assert result == mock_thread_url
+    mock_perform_search.assert_called_once()
+
+    # Should not have cached anything
+    assert len(extractor.thread_id_cache) == 0
+
+
+def test_search_thread_invalid_cached_entry(mock_torrent_client, mocker):
+    """Test search_thread with invalid cached entry - should remove and search again"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Add invalid cache entry
+    extractor.cache_thread_id('Invalid Show', '1', '99999')
+
+    # Mock metadata extraction
+    mocker.patch.object(extractor, '_extract_base_series_name', return_value='Invalid Show')
+    mocker.patch.object(extractor, '_extract_season_number', return_value='1')
+
+    # Mock search_thread_by_id to return None (invalid thread)
+    mocker.patch.object(extractor, 'search_thread_by_id', return_value=None)
+
+    # Mock new search
+    mock_thread_url = 'https://mircrew-releases.org/viewtopic.php?f=51&t=11111'
+    mock_perform_search = mocker.patch.object(extractor, '_perform_search', return_value=mock_thread_url)
+    mocker.patch.object(extractor, 'extract_thread_id_from_url', return_value='11111')
+
+    result = extractor.search_thread('Invalid Show S01 query')
+
+    # Should return new search result
+    assert result == mock_thread_url
+
+    # Should have removed invalid cache entry and added new one
+    assert extractor.get_cached_thread_id('Invalid Show', '1') == '11111'
+
+
+def test_metadata_extraction_for_cache(mock_torrent_client):
+    """Test metadata extraction methods used by cache system"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Test series name extraction
+    test_cases_series = [
+        ('Breaking Bad - S5E10 (2023) 1080p', 'Breaking Bad'),
+        ('The Office (US) - Season 3', 'The Office (US)'),
+        ('Stranger Things S04E01-S04E09', 'Stranger Things'),  # Multi-episode extraction
+        ('Only Murders in the Building - Stagione 5', 'Only Murders in the Building'),
+        ('', None),
+    ]
+
+    for input_title, expected in test_cases_series:
+        result = extractor._extract_base_series_name(input_title)
+        assert result == expected, f"Series extraction failed for '{input_title}': got '{result}', expected '{expected}'"
+
+    # Test season extraction
+    test_cases_season = [
+        ('Breaking Bad - S5E10', '5'),
+        ('The Office Season 3', '3'),
+        ('Stranger Things S04E01', '04'),  # Method returns string as found
+        ('Only Murders in the Building - Stagione 5', '5'),
+        ('No season info', None),
+        ('', None),
+    ]
+
+    for input_title, expected in test_cases_season:
+        result = extractor._extract_season_number(input_title)
+        assert result == expected, f"Season extraction failed for '{input_title}': got '{result}', expected '{expected}'"
+
+
+def test_thread_url_extraction(mock_torrent_client):
+    """Test thread ID extraction from URLs"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    test_cases = [
+        ('https://mircrew-releases.org/viewtopic.php?f=52&t=12345', '12345'),
+        ('viewtopic.php?f=52&t=67890', '67890'),
+        ('t=11111', '11111'),
+        ('invalid_url', None),
+        ('', None),
+        (None, None),
+    ]
+
+    for url, expected in test_cases:
+        result = extractor.extract_thread_id_from_url(url)
+        assert result == expected, f"URL extraction failed for '{url}': got '{result}', expected '{expected}'"
+
+
+def test_cache_persistence_corruption_handling(mock_torrent_client, tmp_path, mocker):
+    """Test cache handling of corrupted persistence files"""
+    cache_file = tmp_path / "corrupt_cache.yml"
+
+    # Write corrupted YAML
+    with open(cache_file, 'w') as f:
+        f.write("invalid: yaml: content: [\n")
+
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+    extractor.load_cache()  # Should handle corruption
+
+    # Should handle corruption gracefully
+    assert extractor.cache_loaded is True
+    assert len(extractor.thread_id_cache) == 0
+
+    # Should still be able to add new entries
+    extractor.cache_thread_id('Test', '1', '123')
+    assert len(extractor.thread_id_cache) == 1
+
+
+def test_cache_thread_by_id_method(mock_torrent_client, mocker):
+    """Test the search_thread_by_id method used by cache hits"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Mock session verification
+    mocker.patch.object(extractor, 'verify_session', return_value=True)
+
+    # Mock successful thread access
+    mock_response = mocker.MagicMock()
+    mock_response.status_code = 200
+    mock_response.url = 'https://mircrew-releases.org/viewtopic.php?f=51&t=99999'
+    mock_get = mocker.patch.object(extractor.session, 'get', return_value=mock_response)
+
+    result = extractor.search_thread_by_id('99999')
+
+    assert result == 'https://mircrew-releases.org/viewtopic.php?f=51&t=99999'
+    mock_get.assert_called_once_with('https://mircrew-releases.org/viewtopic.php?f=51&t=99999', timeout=30)
+
+
+def test_cache_thread_by_id_invalid(mock_torrent_client, mocker):
+    """Test search_thread_by_id with invalid thread"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Mock session verification
+    mocker.patch.object(extractor, 'verify_session', return_value=True)
+
+    # Mock failed thread access
+    mock_response = mocker.MagicMock()
+    mock_response.status_code = 404
+    mock_get = mocker.patch.object(extractor.session, 'get', return_value=mock_response)
+
+    result = extractor.search_thread_by_id('invalid')
+
+    assert result is None
+
+
+# ===== INTEGRATION TESTS =====
+
+def test_full_main_integration_cache_test_mode(mock_torrent_client, tmp_path, mocker):
+    """Integration test using main.py with cache functionality in test mode"""
+    # Set up environment
+    os.environ['TEST_MODE'] = 'true'
+    os.environ['FORUM_TYPE'] = 'mircrew'
+
+    # Create temporary cache file
+    cache_file = tmp_path / "integration_cache.yml"
+
+    # Mock Sonarr variables
+    os.environ['sonarr_series_title'] = 'Test Integration Show'
+    os.environ['sonarr_release_title'] = 'Test Integration Show - S01E01'
+    os.environ['sonarr_episode_seasonnumber'] = '1'
+    os.environ['sonarr_episode_episodenumbers'] = '1'
+
+    # Mock the extractor creation
+    mock_extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Mock the factory to return our extractor
+    mock_create = mocker.patch('extractors.forum_extractor_factory.create_forum_extractor', return_value=mock_extractor)
+
+    # Mock SonarrAPI methods
+    mock_sonarr = mocker.patch('main.SonarrAPI')
+    mock_sonarr_instance = mocker.MagicMock()
+    mock_sonarr_instance.find_matching_release.return_value = 'http://example.com/cached-thread'
+    mock_sonarr.return_value = mock_sonarr_instance
+
+    # Mock login
+    mocker.patch.object(mock_extractor, 'login', return_value=True)
+
+    # Mock search_thread to simulate cache behavior
+    mock_search = mocker.patch.object(mock_extractor, 'search_thread', return_value='http://example.com/cached-thread')
+
+    # Mock magnet extraction
+    mock_magnets = [
+        {'magnet': 'magnet:?xt=urn:btih:test1', 'episode_info': 'S01E01', 'magnet_title': 'Test.S01E01'}
+    ]
+    mocker.patch.object(mock_extractor, 'extract_magnets_from_thread', return_value=mock_magnets)
+
+    # Run main
+    try:
+        main()
+        success = True
+    except Exception as e:
+        print(f"Integration test failed: {e}")
+        success = False
+
+    # Cleanup
+    for key in ['TEST_MODE', 'FORUM_TYPE', 'sonarr_series_title', 'sonarr_release_title',
+               'sonarr_episode_seasonnumber', 'sonarr_episode_episodenumbers']:
+        os.environ.pop(key, None)
+
+    assert success, "Integration test failed"
+
+
+def test_cache_performance_simulation(mock_torrent_client, tmp_path, mocker):
+    """Test cache performance with multiple operations"""
+    cache_file = tmp_path / "performance_cache.yml"
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+    extractor.thread_id_cache = {}  # Start fresh
+
+    # Add many cache entries
+    series_list = [f'Series_{i}' for i in range(10)]  # Reduced for faster test
+    for i, series in enumerate(series_list):
+        for season in range(1, 6):  # 5 seasons each
+            extractor.cache_thread_id(series, str(season), f'thread_{i}_{season}')
+
+    # Verify all entries (10 series * 5 seasons = 50 entries)
+    assert len(extractor.thread_id_cache) == 50
+
+    # Test rapid lookups
+    import time
+    start_time = time.time()
+    for _ in range(1000):
+        result = extractor.get_cached_thread_id('Series_5', '3')
+        assert result == 'thread_5_3'
+    end_time = time.time()
+
+    # Should be very fast (< 0.1 seconds for 1000 lookups)
+    assert (end_time - start_time) < 0.1, f"Cache lookups too slow: {end_time - start_time} seconds"
+
+
+# ===== CACHE STRATEGY VALIDATION =====
+
+def test_search_strategy_fallback_order(mock_torrent_client, mocker):
+    """Test that search strategies fall back in correct order when using cache"""
+    extractor = MIRCrewExtractor(mock_torrent_client)
+
+    # Test case: Cache hit should be used first
+    extractor.cache_thread_id('Strategy Test', '1', '12345')
+
+    # Mock metadata extraction
+    mocker.patch.object(extractor, '_extract_base_series_name', return_value='Strategy Test')
+    mocker.patch.object(extractor, '_extract_season_number', return_value='1')
+
+    # Mock search_thread_by_id (should be called for cache hit)
+    mock_by_id = mocker.patch.object(extractor, 'search_thread_by_id', return_value='cached_result')
+
+    # These should NOT be called
+    mock_perform = mocker.patch.object(extractor, '_perform_search', return_value='search_result')
+
+    result = extractor.search_thread('Strategy Test S01 query')
+    assert result == 'cached_result'
+    mock_by_id.assert_called_once_with('12345')
+    mock_perform.assert_not_called()
+
+
+def test_cache_updates_during_search(mock_torrent_client, tmp_path, mocker):
+    """Test that cache gets updated during successful searches"""
+    cache_file = tmp_path / "cache_updates_test.yml"
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+    extractor.thread_id_cache = {}  # Start with empty cache
+
+    # Mock metadata extraction
+    mocker.patch.object(extractor, '_extract_base_series_name', return_value='Update Test')
+    mocker.patch.object(extractor, '_extract_season_number', return_value='2')
+
+    # Mock search result
+    thread_url = 'https://mircrew-releases.org/viewtopic.php?f=51&t=54321'
+    mocker.patch.object(extractor, '_perform_search', return_value=thread_url)
+    mocker.patch.object(extractor, 'extract_thread_id_from_url', return_value='54321')
+
+    # Initially no cache
+    assert extractor.get_cached_thread_id('Update Test', '2') is None
+
+    # Perform search
+    result = extractor.search_thread('Update Test S02 query')
+
+    # Should have cached the result
+    assert result == thread_url
+    assert extractor.get_cached_thread_id('Update Test', '2') == '54321'
+
+
+def test_cache_error_recovery(mock_torrent_client, tmp_path, mocker):
+    """Test cache recovery from various error conditions"""
+    cache_file = tmp_path / "error_cache.yml"
+
+    # Test 1: File system error during save
+    extractor = MIRCrewExtractor(mock_torrent_client)
+    extractor.cache_file = str(cache_file)
+
+    # Mock yaml.dump to fail (simulating disk full error)
+    mocker.patch('yaml.dump', side_effect=Exception("Disk full"))
+
+    # Should not crash - save_cache handles exceptions internally
+    extractor.cache_thread_id('Error Test', '1', '123')
+
+    # Should still have entry in memory even if save failed
+    assert extractor.get_cached_thread_id('Error Test', '1') == '123'
+
+    # Should still have entry in memory
+    assert extractor.get_cached_thread_id('Error Test', '1') == '123'

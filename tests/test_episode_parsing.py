@@ -3,7 +3,10 @@ Tests for episode parsing from release titles
 """
 
 import pytest
+from typing import Optional, List, Dict, Any
 from main import main  # We'll test the parsing logic
+from extractors.mircrew_extractor import MIRCrewExtractor
+from torrents.torrent_client import TorrentClient
 
 
 class TestEpisodeParsing:
@@ -59,3 +62,30 @@ class TestEpisodeParsing:
             needed_episodes = {f"S{season:02d}E{ep:02d}" for ep in episodes}
 
             assert needed_episodes == {"S05E04"}
+
+    def test_multi_episode_extraction(self):
+        """Test extraction of series names from multi-episode titles"""
+        # Create a mock torrent client for the extractor
+        class MockTorrentClient(TorrentClient):
+            def login(self) -> bool:
+                return True
+
+            def add_magnet(self, magnet_url: str, category: Optional[str] = None) -> bool:
+                return True
+
+            def get_torrents(self) -> List[Dict[str, Any]]:
+                return []
+
+            def remove_torrent(self, torrent_hash: str) -> bool:
+                return True
+
+            def get_torrent_hash_from_magnet(self, magnet_url: str) -> Optional[str]:
+                return None
+
+        extractor = MIRCrewExtractor(MockTorrentClient())
+
+        # Test cases for multi-episode ranges
+        assert extractor._extract_base_series_name("Stranger Things S04E01-S04E09") == "Stranger Things"
+        assert extractor._extract_base_series_name("The Mandalorian S03E01E02") == "The Mandalorian"
+        assert extractor._extract_base_series_name("Loki S02E01-E02") == "Loki"
+        assert extractor._extract_base_series_name("Westworld S04E01~E04") == "Westworld"

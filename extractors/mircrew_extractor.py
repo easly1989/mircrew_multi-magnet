@@ -14,6 +14,9 @@ from bs4 import BeautifulSoup, Tag
 from urllib.parse import urljoin, parse_qs, urlparse, unquote, quote_plus
 import sys
 import os
+import yaml
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from extractors.forum_extractor import ForumExtractor
 from torrents.torrent_client import TorrentClient
@@ -60,7 +63,20 @@ class MIRCrewExtractor(ForumExtractor):
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
+
+        # Thread ID cache attributes
+        self.cache_file = "mircrew_cache.yml"
+        self.thread_id_cache = {}
+        self.cache_loaded = False
+
+        # Cache metrics
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.cache_last_metrics_log = None
+        self.cache_max_size = 100
+
         self.load_cookies()
+        self.load_cache()
 
     def load_cookies(self):
         """Load saved cookies from file"""
@@ -81,6 +97,204 @@ class MIRCrewExtractor(ForumExtractor):
             logger.debug("Cookies saved to file")
         except Exception as e:
             logger.warning(f"Error saving cookies: {e}")
+
+    def load_cache(self):
+        """Load thread ID cache from file"""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    cache_data = yaml.safe_load(f)
+                    if cache_data and 'thread_cache' in cache_data:
+                        loaded_cache = cache_data['thread_cache']
+                        # Convert legacy format to new format for backward compatibility
+                        for key, value in loaded_cache.items():
+                            if isinstance(value, str):
+                                # Legacy format - convert to new format
+                                loaded_cache[key] = {
+                                    'thread_id': value,
+                                    'timestamp': datetime.now().isoformat()  # Use current time for legacy entries
+                                }
+                            elif isinstance(value, dict) and 'thread_id' not in value:
+                                # Malformed entry - fix it
+                                if isinstance(value, dict):
+                                    loaded_cache[key] = {
+                                        'thread_id': str(value),
+                                        'timestamp': datetime.now().isoformat()
+                                    }
+                        self.thread_id_cache = loaded_cache
+                        logger.debug(f"Loaded {len(self.thread_id_cache)} cached thread IDs")
+                    else:
+                        self.thread_id_cache = {}
+                self.cache_loaded = True
+            else:
+                self.thread_id_cache = {}
+                self.cache_loaded = True
+                logger.debug("Cache file not found, starting with empty cache")
+        except Exception as e:
+            logger.warning(f"Error loading cache: {e}")
+            self.thread_id_cache = {}
+            self.cache_loaded = True
+
+    def save_cache(self):
+        """Save thread ID cache to file"""
+        try:
+            # Convert cache entries to saveable format
+            saveable_cache = {}
+            for key, value in self.thread_id_cache.items():
+                if isinstance(value, dict):
+                    saveable_cache[key] = value
+                else:
+                    # Legacy format - convert to new format
+                    saveable_cache[key] = {
+                        'thread_id': str(value),
+                        'timestamp': datetime.now().isoformat()
+                    }
+
+            cache_data = {'thread_cache': saveable_cache}
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                yaml.dump(cache_data, f, default_flow_style=False, allow_unicode=True)
+            logger.debug(f"Saved {len(self.thread_id_cache)} thread IDs to cache")
+        except Exception as e:
+            logger.warning(f"Error saving cache: {e}")
+
+    def get_cached_thread_id(self, series_title, season):
+        """Get cached thread ID for series and season"""
+        if not self.cache_loaded:
+            self.load_cache()
+
+        if not series_title or not season:
+            return None
+
+        # Normalize season format
+        try:
+            season_num = int(season)
+            cache_key = f"{series_title} S{season_num:02d}"
+        except (ValueError, TypeError):
+            cache_key = f"{series_title} S{season}"
+
+        cache_entry = self.thread_id_cache.get(cache_key)
+        if cache_entry:
+            # Handle both new format (dict) and legacy format (string)
+            if isinstance(cache_entry, dict):
+                thread_id = cache_entry.get('thread_id')
+                # Check if entry has expired
+                if 'timestamp' in cache_entry:
+                    try:
+                        entry_date = datetime.fromisoformat(cache_entry['timestamp'])
+                        if entry_date < datetime.now() - timedelta(days=180):
+                            logger.debug(f"Cache entry expired for '{cache_key}'")
+                            del self.thread_id_cache[cache_key]
+                            self.cache_misses += 1
+                            self._log_cache_metrics()
+                            return None
+                    except (ValueError, TypeError):
+                        logger.debug(f"Invalid timestamp for '{cache_key}', treating as expired")
+                        del self.thread_id_cache[cache_key]
+                        self.cache_misses += 1
+                        self._log_cache_metrics()
+                        return None
+            else:
+                # Legacy format - treat as string thread_id
+                thread_id = cache_entry
+
+            if thread_id:
+                self.cache_hits += 1
+                logger.debug(f"Cache hit for '{cache_key}': thread {thread_id}")
+                self._log_cache_metrics()
+                return str(thread_id)
+
+        self.cache_misses += 1
+        logger.debug(f"Cache miss for '{cache_key}'")
+        self._log_cache_metrics()
+        return None
+
+    def _log_cache_metrics(self):
+        """Log cache hit rate metrics periodically"""
+        total_lookups = self.cache_hits + self.cache_misses
+        if total_lookups == 0:
+            return
+
+        # Log metrics every 10 lookups or if it's been more than 5 minutes since last log
+        current_time = datetime.now()
+        should_log = (total_lookups % 10 == 0 or
+                     self.cache_last_metrics_log is None or
+                     (current_time - self.cache_last_metrics_log).total_seconds() > 300)
+
+        if should_log:
+            hit_rate = (self.cache_hits / total_lookups) * 100
+            logger.info(f"Cache metrics - Hits: {self.cache_hits}, Misses: {self.cache_misses}, "
+                       f"Total: {total_lookups}, Hit Rate: {hit_rate:.1f}%")
+            self.cache_last_metrics_log = current_time
+
+    def _manage_cache_size(self):
+        """Manage cache size by evicting old entries if cache exceeds maximum size"""
+        # Clean expired entries first
+        self._clean_expired_entries()
+
+        # If still over limit, evict oldest entries (LRU-style)
+        if len(self.thread_id_cache) >= self.cache_max_size:
+            # Sort by timestamp and keep only the most recent entries
+            sorted_entries = sorted(
+                self.thread_id_cache.items(),
+                key=lambda x: datetime.fromisoformat(x[1]['timestamp']) if isinstance(x[1], dict) else datetime.min,
+                reverse=True
+            )
+            # Keep only the most recent 80% of max size to leave room for new entries
+            keep_count = int(self.cache_max_size * 0.8)
+            entries_to_keep = dict(sorted_entries[:keep_count])
+            removed_count = len(self.thread_id_cache) - len(entries_to_keep)
+            if removed_count > 0:
+                logger.info(f"Cache size management: removed {removed_count} old entries")
+            self.thread_id_cache = entries_to_keep
+
+    def _clean_expired_entries(self):
+        """Remove entries that have expired (older than 6 months)"""
+        cutoff_date = datetime.now() - timedelta(days=180)  # 6 months
+        expired_keys = []
+
+        for key, value in self.thread_id_cache.items():
+            if isinstance(value, dict) and 'timestamp' in value:
+                try:
+                    entry_date = datetime.fromisoformat(value['timestamp'])
+                    if entry_date < cutoff_date:
+                        expired_keys.append(key)
+                except (ValueError, TypeError):
+                    # If timestamp is malformed, treat as expired
+                    expired_keys.append(key)
+            else:
+                # Legacy format without timestamp - treat as expired to force refresh
+                expired_keys.append(key)
+
+        for key in expired_keys:
+            del self.thread_id_cache[key]
+
+        if expired_keys:
+            logger.info(f"Cleaned {len(expired_keys)} expired cache entries")
+
+    def cache_thread_id(self, series_title, season, thread_id):
+        """Cache thread ID for series and season"""
+        if not series_title or not season or not thread_id:
+            return
+
+        # Normalize season format
+        try:
+            season_num = int(season)
+            cache_key = f"{series_title} S{season_num:02d}"
+        except (ValueError, TypeError):
+            cache_key = f"{series_title} S{season}"
+
+        # Check cache size and evict if necessary
+        self._manage_cache_size()
+
+        # Add entry with timestamp
+        self.thread_id_cache[cache_key] = {
+            'thread_id': str(thread_id),
+            'timestamp': datetime.now().isoformat()
+        }
+        logger.debug(f"Cached thread ID for '{cache_key}': {thread_id}")
+
+        # Save cache immediately for persistence
+        self.save_cache()
 
     def login(self, retries=15, initial_wait=5):
         """Login to MIRCrew, returns sid if ok, False if fails"""
@@ -293,7 +507,157 @@ class MIRCrewExtractor(ForumExtractor):
             logger.warning(f"Error verifying session: {e}")
             return False
 
+    def extract_thread_id_from_url(self, url: str) -> Optional[str]:
+        """Extract thread ID from MIRCrew forum URL"""
+        if not url:
+            return None
+
+        # Handle both absolute and relative URLs
+        if url.startswith('http'):
+            parsed = urlparse(url)
+            path = parsed.path
+            query = parsed.query
+        else:
+            path = url
+            query = ''
+
+        # Extract thread ID from various URL patterns
+        patterns = [
+            r'viewtopic\.php\?f=\d+&t=(\d+)',  # viewtopic.php?f=52&t=12345
+            r't=(\d+)',                         # t=12345 parameter
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                thread_id = match.group(1)
+                logger.debug(f"Extracted thread ID '{thread_id}' from URL: {url}")
+                return thread_id
+
+        logger.warning(f"Could not extract thread ID from URL: {url}")
+        return None
+
+    def search_thread_by_release_title_with_metadata(self, release_title, series_title=None, season=None, episode=None):
+        """Enhanced search using Sonarr metadata for more precise matching"""
+        if not self.verify_session():
+            logger.warning("Session expired, attempting re-login...")
+            if not self.login():
+                logger.error("Re-login failed")
+                return None
+            logger.info("Re-login successful, continuing search...")
+
+        # Strategy 1: Use release title with enhanced metadata
+        logger.info(f"Searching for: {release_title}")
+        if series_title:
+            logger.info(f"Series context: {series_title}")
+        if season and episode:
+            logger.info(f"Episode context: S{season}E{episode}")
+
+        # Try multiple search strategies with increasing specificity
+        search_strategies = self._build_enhanced_search_queries(release_title, series_title, season, episode)
+
+        for strategy_name, query in search_strategies:
+            logger.info(f"Trying {strategy_name}: {query}")
+            encoded_query = quote_plus(f'"{query}"')
+            thread_url = self._perform_search(encoded_query)
+
+            if thread_url:
+                logger.info(f"Found thread using {strategy_name}")
+                return thread_url
+
+        logger.warning("No thread found with any enhanced search strategy")
+        return None
+
+    def _build_enhanced_search_queries(self, release_title, series_title=None, season=None, episode=None):
+        """Build multiple search queries with increasing specificity using available metadata"""
+        queries = []
+
+        # Strategy 1: Exact release title match (most specific)
+        queries.append(("exact_title", release_title))
+
+        # Strategy 2: Clean release title (remove extra metadata)
+        clean_title = self._clean_release_title_for_search(release_title)
+        if clean_title != release_title:
+            queries.append(("clean_title", clean_title))
+
+        # Strategy 3: Series + Season + Episode (if available)
+        if series_title and season and episode:
+            season_episode = f"S{int(season):02d}E{int(episode):02d}"
+            query = f"{series_title} {season_episode}"
+            queries.append(("series_season_ep", query))
+
+            # Also try Italian format
+            italian_se = f"Stagione {season} Episodio {episode}"
+            query_it = f"{series_title} {italian_se}"
+            queries.append(("series_season_ep_it", query_it))
+
+        # Strategy 4: Series + Season only
+        elif series_title and season:
+            query = f"{series_title} Stagione {season}"
+            queries.append(("series_season", query))
+
+            # Also try English format
+            query_en = f"{series_title} Season {season}"
+            queries.append(("series_season_en", query_en))
+
+        # Strategy 5: Just series title
+        elif series_title:
+            queries.append(("series_only", series_title))
+
+        # Strategy 6: Extract and use metadata from release title
+        metadata_queries = self._extract_enhanced_search_queries(release_title)
+        for query_type, query in metadata_queries:
+            queries.append((f"metadata_{query_type}", query))
+
+        return queries
+
+    def _clean_release_title_for_search(self, title):
+        """Clean release title by removing common unwanted metadata"""
+        # Remove file extensions
+        title = re.sub(r'\.(mkv|mp4|avi|m4v|mov)$', '', title, flags=re.IGNORECASE)
+
+        # Remove quality/resolution info that might interfere with search
+        title = re.sub(r'\b(1080p|720p|2160p|4K|UHD|BluRay|WEB-DL|HDTV)\b', '', title, flags=re.IGNORECASE)
+
+        # Remove common release group patterns
+        title = re.sub(r'-\w+$', '', title)
+
+        # Clean up extra spaces
+        title = re.sub(r'\s+', ' ', title).strip()
+
+        return title
+
+    def search_thread_by_id(self, thread_id: str):
+        """Directly access a thread by its ID for maximum reliability"""
+        if not thread_id:
+            logger.warning("No thread ID provided")
+            return None
+
+        if not self.verify_session():
+            logger.warning("Session expired, attempting re-login...")
+            if not self.login():
+                logger.error("Re-login failed")
+                return None
+            logger.info("Re-login successful")
+
+        thread_url = f"{MIRCREW_BASE_URL}viewtopic.php?f=51&t={thread_id}"
+        logger.info(f"Using direct thread access: {thread_url}")
+
+        # Verify the thread exists by making a quick request
+        try:
+            response = self.session.get(thread_url, timeout=30)
+            if response.status_code == 200 and "viewtopic.php" in response.url:
+                logger.info(f"Thread {thread_id} exists and is accessible")
+                return thread_url
+            else:
+                logger.warning(f"Thread {thread_id} not found or not accessible")
+                return None
+        except Exception as e:
+            logger.error(f"Error verifying thread {thread_id}: {e}")
+            return None
+
     def search_thread_by_release_title(self, release_title):
+        """Search thread by release title using the existing session with enhanced fallback strategies"""
         """Search thread by release title using the existing session with enhanced fallback strategies"""
         if not self.verify_session():
             logger.warning("Session expired, attempting re-login...")
@@ -339,8 +703,52 @@ class MIRCrewExtractor(ForumExtractor):
         logger.warning("No thread found with any search strategy")
         return None
 
+    def search_thread(self, query):
+        """Search thread with caching support - checks cache first, then falls back to forum search"""
+        if not query:
+            logger.warning("No query provided for search_thread")
+            return None
+
+        # Extract series metadata from query for cache lookup
+        series_title = self._extract_base_series_name(query)
+        season = self._extract_season_number(query)
+
+        # Try cache lookup first
+        if series_title and season:
+            cached_thread_id = self.get_cached_thread_id(series_title, season)
+            if cached_thread_id:
+                logger.info(f"Using cached thread ID {cached_thread_id} for {series_title} S{season}")
+                thread_url = self.search_thread_by_id(cached_thread_id)
+                if thread_url:
+                    return thread_url
+                else:
+                    logger.warning(f"Cached thread ID {cached_thread_id} no longer valid, removing from cache")
+                    # Remove invalid cache entry
+                    try:
+                        season_num = int(season)
+                        cache_key = f"{series_title} S{season_num:02d}"
+                        if cache_key in self.thread_id_cache:
+                            del self.thread_id_cache[cache_key]
+                            self.save_cache()
+                    except (ValueError, TypeError):
+                        pass
+
+        # Cache miss or no metadata available - fallback to forum search
+        logger.info("Cache miss or insufficient metadata, performing forum search...")
+        encoded_query = quote_plus(f'"{query}"')
+        thread_url = self._perform_search(encoded_query)
+
+        # Cache the result if we found a thread and have metadata
+        if thread_url and series_title and season:
+            thread_id = self.extract_thread_id_from_url(thread_url)
+            if thread_id:
+                self.cache_thread_id(series_title, season, thread_id)
+                logger.info(f"Cached new thread ID {thread_id} for {series_title} S{season}")
+
+        return thread_url
+
     def _perform_search(self, encoded_query):
-        """Perform the actual search with given query"""
+        """Perform the actual search with given query and return detailed results"""
         params = {
             "keywords": f"{encoded_query}",
             "terms": "all",
@@ -375,29 +783,56 @@ class MIRCrewExtractor(ForumExtractor):
 
         logger.info("Search results container found, searching for thread...")
 
-        for a in search_results_container.find_all('a', href=True):
-            if not isinstance(a, Tag):
+        # Collect all potential thread results for better matching
+        thread_results = []
+
+        for row in search_results_container.find_all('li', {'class': 'row'}):
+            if not isinstance(row, Tag):
                 continue
-            href = a.attrs.get('href')
+
+            # Find the topic title link
+            topic_link = row.find('a', {'class': 'topictitle'})
+            if not topic_link or not isinstance(topic_link, Tag):
+                continue
+
+            href = topic_link.attrs.get('href')
             if not href:
                 continue
 
             href_str = str(href)
-            logger.info(f"Found link in container: {href_str}")
+            if "viewtopic.php" not in href_str:
+                continue
 
-            if "viewtopic.php" in href_str:
-                if href_str.startswith('http'):
-                    thread_url = href_str
-                    logger.info("URL already complete (absolute)")
-                else:
-                    thread_url = urljoin(MIRCREW_BASE_URL, href_str)
-                    logger.info(f"URL built from relative: '{href_str}' -> '{thread_url}'")
+            # Build full URL
+            if href_str.startswith('http'):
+                thread_url = href_str
+            else:
+                thread_url = urljoin(MIRCREW_BASE_URL, href_str)
 
-                logger.info(f"MIRCrew thread found: {thread_url}")
-                return thread_url
+            # Extract thread title for matching
+            thread_title = topic_link.get_text().strip()
 
-        logger.warning("No MIRCrew thread found in search.")
-        return None
+            # Extract thread ID
+            thread_id = self.extract_thread_id_from_url(thread_url)
+
+            thread_info = {
+                'url': thread_url,
+                'title': thread_title,
+                'thread_id': thread_id,
+                'score': 0  # Will be used for ranking results
+            }
+
+            thread_results.append(thread_info)
+            logger.debug(f"Found thread: {thread_title} (ID: {thread_id})")
+
+        if not thread_results:
+            logger.warning("No MIRCrew threads found in search.")
+            return None
+
+        # Return the first (most relevant) result
+        best_result = thread_results[0]
+        logger.info(f"MIRCrew thread found: {best_result['title']} (ID: {best_result['thread_id']})")
+        return best_result['url']
 
     def _extract_enhanced_search_queries(self, release_title):
         """Extract multiple enhanced search queries from release title including metadata"""
@@ -471,6 +906,12 @@ class MIRCrewExtractor(ForumExtractor):
             title = re.sub(r'\s*\[.*?\]', '', title, flags=re.IGNORECASE)  # Remove [IN CORSO], [03/10], etc.
             title = re.sub(r'\s*\([^)]*\)\s*$', '', title, flags=re.IGNORECASE)  # Remove trailing parentheses
 
+            # Handle multi-episode ranges first
+            multi_episode_pattern = r"(.*?)(?:\s+S\d+E\d+[-~]S?\d*E\d+.*|\s+S\d+E\d+E\d+.*|\s+S\d+E\d+-\d+.*|\s+S\d+E\d+~\d+.*)"
+            match = re.match(multi_episode_pattern, title, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+
             # Look for season patterns and extract series name
             season_patterns = [
                 r'\s*-\s*S\d+E\d+(?:\s*of\s*\d+)?(?:\s*-\s*\d+)?(?:\s*\[.*?\])?.*$',
@@ -482,6 +923,8 @@ class MIRCrewExtractor(ForumExtractor):
                 r'\s+\d+x\d+(?:-\d+)?(?:\s*\[.*?\])?.*$',
                 r'\s+S\d+E\d+(?:\s*of\s*\d+)?(?:\s*\[.*?\])?.*$',
                 r'\s*\d+x\d+(?:\s*of\s*\d+)?(?:.*)?$',
+                r'\s+Season\s*\d+(?:\s*\[.*?\])?.*$',  # Added: Season 2 without dash
+                r'\s+Stagione\s*\d+(?:\s*\[.*?\])?.*$',  # Added: Stagione 2 without dash
             ]
 
             series_name = title

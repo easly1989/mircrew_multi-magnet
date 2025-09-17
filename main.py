@@ -15,6 +15,40 @@ import logging
 import requests
 dotenv.load_dotenv()
 
+
+def validate_episode_code(episode_code):
+    """Validate episode code format and values"""
+    if not episode_code:
+        return False
+    match = re.match(r'S(\d+)E(\d+)', episode_code, re.IGNORECASE)
+    if not match:
+        return False
+    season = int(match.group(1))
+    episode = int(match.group(2))
+    return season >= 1 and episode >= 1
+
+
+def normalize_episode_codes(codes):
+    """Normalize episode codes to consistent SXXEXX format"""
+    normalized = set()
+    for code in codes:
+        if isinstance(code, str):
+            # Handle various formats
+            code = code.upper()
+            match = re.match(r'S(\d+)E(\d+)', code)
+            if match:
+                season = int(match.group(1))
+                episode = int(match.group(2))
+                normalized.add(f"S{season:02d}E{episode:02d}")
+            else:
+                # Try 1x01 format
+                match = re.match(r'(\d+)x(\d+)', code)
+                if match:
+                    season = int(match.group(1))
+                    episode = int(match.group(2))
+                    normalized.add(f"S{season:02d}E{episode:02d}")
+    return normalized
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -70,7 +104,15 @@ def main():
         logger.error("Unable to access torrent client")
         return
 
-    thread_url = extractor.search_thread_by_release_title(release_title)
+    # Use Sonarr API's metadata-aware search method
+    thread_url = sonarr_api.find_matching_release(
+        extractor=extractor,
+        release_title=release_title,
+        series_title=series_title,
+        season=season_number,
+        episode=episode_numbers
+    )
+
     if not thread_url:
         logger.error("I didn't find a forum thread for this release. Exiting.")
         sys.exit(0)
@@ -90,6 +132,11 @@ def main():
             season = int(season_number)
             episodes = [int(ep.strip()) for ep in episode_numbers.split(',') if ep.strip()]
             needed_episodes = {f"S{season:02d}E{ep:02d}" for ep in episodes}
+            # Validate episode codes
+            invalid_episodes = [ep for ep in needed_episodes if not validate_episode_code(ep)]
+            if invalid_episodes:
+                logger.warning(f"Invalid episode codes from Sonarr variables: {invalid_episodes}")
+                needed_episodes = {ep for ep in needed_episodes if validate_episode_code(ep)}
             logger.info(f"Episodes from Sonarr variables: {needed_episodes}")
         except (ValueError, AttributeError) as e:
             logger.warning(f"Error parsing direct Sonarr variables: {e}, trying with file path")
@@ -108,8 +155,12 @@ def main():
         if episode_match:
             season = int(episode_match.group(1))
             episode = int(episode_match.group(2))
-            needed_episodes = {f"S{season:02d}E{episode:02d}"}
-            logger.info(f"Episode extracted from release title: {needed_episodes}")
+            episode_code = f"S{season:02d}E{episode:02d}"
+            if validate_episode_code(episode_code):
+                needed_episodes = {episode_code}
+                logger.info(f"Episode extracted from release title: {needed_episodes}")
+            else:
+                logger.warning(f"Invalid episode code extracted from release title: {episode_code}")
         else:
             # Fallback to season-level extraction
             season_match = re.search(r'(?:stagione|season)\s*(\d+)', release_title, re.IGNORECASE)
@@ -185,11 +236,20 @@ def main():
         magnet_title = magnet_info['magnet_title']
 
         episode_codes_found = extractor.extract_episode_codes(magnet_title)
+        episode_codes_found = normalize_episode_codes(episode_codes_found)
+        # Validate extracted codes
+        valid_codes = {code for code in episode_codes_found if validate_episode_code(code)}
+        if len(valid_codes) != len(episode_codes_found):
+            invalid_codes = episode_codes_found - valid_codes
+            logger.warning(f"Invalid episode codes extracted from '{magnet_title}': {invalid_codes}")
+        episode_codes_found = valid_codes
+        logger.debug(f"Validated episode codes from '{magnet_title}': {episode_codes_found}")
         filter_by_codes = bool(needed_episodes) and not process_all_episodes
 
         # NEW: Skip if episode already exists (intelligent filtering)
         if episode_codes_found and existing_episodes:
             already_exists = episode_codes_found.intersection(existing_episodes)
+            logger.debug(f"Already existing episodes: {already_exists}")
             if already_exists:
                 logger.info(f"Skipping {magnet_title} - already exists in library: {already_exists}")
                 # If this is the first magnet (original torrent), we might want to keep it anyway
