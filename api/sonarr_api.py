@@ -98,6 +98,60 @@ class SonarrAPI:
                 time.sleep(1 * (2 ** attempt))
         return None
 
+    def find_matching_release(self, extractor, release_title, series_title=None, season=None, episode=None):
+        """Find matching forum release using metadata-aware search"""
+        if not extractor or not release_title:
+            logger.warning("Missing extractor or release_title for find_matching_release")
+            return None
+
+        try:
+            logger.info(f"Finding matching release for: {release_title}")
+            if series_title:
+                logger.debug(f"Series context: {series_title}")
+            if season:
+                logger.debug(f"Season context: {season}")
+            if episode:
+                logger.debug(f"Episode context: {episode}")
+
+            # Try enhanced metadata-aware search first
+            enhanced_search_method = getattr(extractor, 'search_thread_by_release_title_with_metadata', None)
+            if enhanced_search_method and (series_title or season or episode):
+                logger.info("Using enhanced metadata-aware search")
+                thread_url = enhanced_search_method(
+                    release_title=release_title,
+                    series_title=series_title,
+                    season=season,
+                    episode=episode
+                )
+                if thread_url:
+                    logger.info("Enhanced search successful")
+                    return thread_url
+
+            # Fallback to standard search
+            logger.info("Enhanced search failed or insufficient metadata, using standard search")
+            fallback_method = getattr(extractor, 'search_thread_by_release_title', None)
+            if fallback_method:
+                thread_url = fallback_method(release_title)
+                if thread_url:
+                    logger.info("Standard search successful")
+                    return thread_url
+
+            # Last resort: use new search_thread method with caching
+            logger.info("Standard search failed, using cached search_thread method")
+            search_thread_method = getattr(extractor, 'search_thread', None)
+            if search_thread_method:
+                thread_url = search_thread_method(release_title)
+                if thread_url:
+                    logger.info("Cached search successful")
+                    return thread_url
+
+            logger.warning("All search methods failed to find matching release")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error in find_matching_release: {e}")
+            return None
+
     def get_existing_episodes(self, series_title, season_number=None):
         """Get list of existing episode codes (S01E01 format)"""
         existing_episodes = set()
@@ -107,60 +161,6 @@ class SonarrAPI:
             if not series:
                 logger.warning(f"Series '{series_title}' not found in Sonarr")
                 return existing_episodes
-        
-            def find_matching_release(self, extractor, release_title, series_title=None, season=None, episode=None):
-                """Find matching forum release using metadata-aware search"""
-                if not extractor or not release_title:
-                    logger.warning("Missing extractor or release_title for find_matching_release")
-                    return None
-        
-                try:
-                    logger.info(f"Finding matching release for: {release_title}")
-                    if series_title:
-                        logger.debug(f"Series context: {series_title}")
-                    if season:
-                        logger.debug(f"Season context: {season}")
-                    if episode:
-                        logger.debug(f"Episode context: {episode}")
-        
-                    # Try enhanced metadata-aware search first
-                    enhanced_search_method = getattr(extractor, 'search_thread_by_release_title_with_metadata', None)
-                    if enhanced_search_method and (series_title or season or episode):
-                        logger.info("Using enhanced metadata-aware search")
-                        thread_url = enhanced_search_method(
-                            release_title=release_title,
-                            series_title=series_title,
-                            season=season,
-                            episode=episode
-                        )
-                        if thread_url:
-                            logger.info("Enhanced search successful")
-                            return thread_url
-        
-                    # Fallback to standard search
-                    logger.info("Enhanced search failed or insufficient metadata, using standard search")
-                    fallback_method = getattr(extractor, 'search_thread_by_release_title', None)
-                    if fallback_method:
-                        thread_url = fallback_method(release_title)
-                        if thread_url:
-                            logger.info("Standard search successful")
-                            return thread_url
-        
-                    # Last resort: use new search_thread method with caching
-                    logger.info("Standard search failed, using cached search_thread method")
-                    search_thread_method = getattr(extractor, 'search_thread', None)
-                    if search_thread_method:
-                        thread_url = search_thread_method(release_title)
-                        if thread_url:
-                            logger.info("Cached search successful")
-                            return thread_url
-        
-                    logger.warning("All search methods failed to find matching release")
-                    return None
-        
-                except Exception as e:
-                    logger.error(f"Error in find_matching_release: {e}")
-                    return None
 
             episodes = self.get_series_episodes(series['id'])
             file_count = 0

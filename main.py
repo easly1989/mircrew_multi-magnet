@@ -60,7 +60,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import Sonarr API client
-from api import SonarrAPI
+from api.sonarr_api import SonarrAPI
 
 def main():
     """Main function of the script"""
